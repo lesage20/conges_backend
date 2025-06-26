@@ -2,6 +2,7 @@ from typing import List
 from fastapi import Depends, HTTPException, status
 
 from models.user import User, RoleEnum
+from models.database import get_user_db
 from .auth import current_active_user
 
 async def get_current_user(user: User = Depends(current_active_user)) -> User:

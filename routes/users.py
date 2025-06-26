@@ -39,7 +39,7 @@ async def get_users_by_departement(
     users = result.scalars().all()
     return users
 
-@router.get("/tous", response_model=List[UserRead])
+@router.get("", response_model=List[UserRead])
 async def get_all_users(
     db: AsyncSession = Depends(get_database),
     current_user: User = Depends(get_current_user)
