@@ -14,9 +14,8 @@ from utils.dependencies import get_current_user, require_drh, require_manager
 router = APIRouter(prefix="/users", tags=["users"])
 
 # Routes CRUD des utilisateurs (FastAPIUsers par défaut)
-router.include_router(
-    fastapi_users.get_users_router(UserRead, UserUpdate),
-)
+# IMPORTANT: Inclure nos routes personnalisées AVANT FastAPIUsers pour éviter les conflits
+# FastAPIUsers génère des routes comme /{user_id} qui peuvent masquer nos routes personnalisées
 
 @router.get("/me", response_model=UserRead)
 async def get_current_user_profile(
@@ -40,41 +39,62 @@ async def get_users_by_departement(
     users = result.scalars().all()
     return users
 
+@router.get("/tous", response_model=List[UserRead])
+async def get_all_users(
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Récupère tous les utilisateurs selon le rôle :
+    - DRH : tous les employés et chefs de service  
+    - Chef de service : tous les employés de son département
+    - Employé : accès refusé
+    """
+    if current_user.role == RoleEnum.EMPLOYE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Les employés ne peuvent pas accéder à cette route"
+        )
+    
+    if current_user.role == RoleEnum.DRH:
+        # DRH : récupérer tous les employés et chefs de service (sauf DRH)
+        result = await db.execute(
+            select(User)
+            .where(
+                User.role.in_([RoleEnum.EMPLOYE, RoleEnum.CHEF_SERVICE])
+            )
+            .options(selectinload(User.departement))
+        )
+    elif current_user.role == RoleEnum.CHEF_SERVICE:
+        # Chef de service : récupérer tous les employés de son département
+        if not current_user.departement_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Chef de service sans département assigné"
+            )
+        
+        result = await db.execute(
+            select(User)
+            .where(
+                User.departement_id == current_user.departement_id,
+                User.role == RoleEnum.EMPLOYE
+            )
+            .options(selectinload(User.departement))
+        )
+    
+    users = result.scalars().all()
+    return users
+
 @router.get("/equipe", response_model=List[UserRead])
 async def get_my_team(
     db: AsyncSession = Depends(get_database),
     current_user: User = Depends(get_current_user)
 ):
-    """Récupère l'équipe de l'utilisateur connecté (si chef de service)"""
-    if current_user.role not in [RoleEnum.CHEF_SERVICE, RoleEnum.DRH]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Seuls les chefs de service et DRH peuvent accéder à cette route"
-        )
-    
-    if current_user.role == RoleEnum.CHEF_SERVICE:
-        # Pour un chef de service, récupérer tous les employés de son département (sauf lui-même)
-        result = await db.execute(
-            select(User)
-            .where(
-                and_(
-                    User.departement_id == current_user.departement_id,
-                    User.id != current_user.id,
-                    User.role == RoleEnum.EMPLOYE
-                )
-            )
-            .options(selectinload(User.departement))
-        )
-    else:
-        # Pour DRH, récupérer tous les utilisateurs
-        result = await db.execute(
-            select(User)
-            .where(User.id != current_user.id)
-            .options(selectinload(User.departement))
-        )
-    
-    team_members = result.scalars().all()
-    return team_members
+    """
+    Alias pour /tous - utilisé pour la page "Mon Équipe"
+    Récupère l'équipe selon le rôle de l'utilisateur connecté
+    """
+    return await get_all_users(db, current_user)
 
 @router.get("/managers", response_model=List[UserRead])
 async def get_managers(
@@ -145,3 +165,8 @@ async def assign_departement(
     await db.commit()
     await db.refresh(user)
     return user 
+
+# Routes CRUD des utilisateurs (FastAPIUsers par défaut) - À la fin pour éviter les conflits
+router.include_router(
+    fastapi_users.get_users_router(UserRead, UserUpdate),
+)

@@ -6,7 +6,7 @@ Script de test simple pour vérifier que l'API fonctionne
 import requests
 import json
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:65000"
 
 def test_api():
     print("🧪 Test de l'API FastAPI...")
