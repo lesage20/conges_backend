@@ -224,8 +224,16 @@ async def create_demande_conge(
     
     # Trouver le valideur approprié selon la hiérarchie
     valideur_id = None
+    statut_initial = StatutDemandeEnum.EN_ATTENTE  # Par défaut
     
-    if current_user.role == RoleEnum.CHEF_SERVICE:
+    # *** NOUVEAU : Logique spéciale pour le DRH ***
+    if current_user.role == RoleEnum.DRH:
+        # Les demandes du DRH sont automatiquement approuvées
+        statut_initial = StatutDemandeEnum.APPROUVEE
+        valideur_id = current_user.id  # Il est son propre valideur
+        print(f"DRH {current_user.nom} {current_user.prenom} : demande automatiquement approuvée")
+        
+    elif current_user.role == RoleEnum.CHEF_SERVICE:
         # Si l'utilisateur est chef de service, chercher un DRH pour validation
         drh_result = await db.execute(
             select(User).where(User.role == RoleEnum.DRH).limit(1)
@@ -238,37 +246,55 @@ async def create_demande_conge(
             print("Aucun DRH trouvé pour valider la demande du chef de service")
             
     elif current_user.role == RoleEnum.EMPLOYE and current_user.departement_id:
-        # Pour un employé, chercher le chef de service de son département
-        chef_result = await db.execute(
-            select(User).where(
-                and_(
-                    User.departement_id == current_user.departement_id,
-                    User.role == RoleEnum.CHEF_SERVICE
-                )
-            )
-        )
-        chef_service = chef_result.scalar_one_or_none()
+        # Pour un employé, vérifier d'abord s'il est dans le département RH
+        # Si oui, validation directe par le DRH
+        # Sinon, validation par le chef de service puis DRH
         
-        if chef_service:
-            valideur_id = chef_service.id
-            print(f"Employé → Chef de service trouvé: {chef_service.nom} {chef_service.prenom} (ID: {chef_service.id})")
-        else:
-            # Pas de chef de service dans le département, chercher un DRH
+        # Récupérer le département de l'employé
+        dept_result = await db.execute(
+            select(Departement).where(Departement.id == current_user.departement_id)
+        )
+        departement = dept_result.scalar_one_or_none()
+        
+        # Vérifier si c'est le département RH (par nom)
+        if departement and departement.nom.lower() in ["ressources humaines", "rh", "drh"]:
+            # Employé RH : validation directe par le DRH
             drh_result = await db.execute(
                 select(User).where(User.role == RoleEnum.DRH).limit(1)
             )
             drh = drh_result.scalar_one_or_none()
             if drh:
                 valideur_id = drh.id
-                print(f"Pas de chef de service → DRH trouvé: {drh.nom} {drh.prenom} (ID: {drh.id})")
-            else:
-                print(f"Aucun valideur trouvé (ni chef de service ni DRH)")
-    else:
-        # Utilisateur sans département ou rôle DRH
-        if current_user.role == RoleEnum.DRH:
-            print("Utilisateur DRH : pas de valideur automatique assigné")
+                print(f"Employé RH → DRH trouvé: {drh.nom} {drh.prenom} (ID: {drh.id})")
         else:
-            print(f"Utilisateur {current_user.nom} sans département : pas de valideur automatique")
+            # Employé normal : chercher le chef de service de son département
+            chef_result = await db.execute(
+                select(User).where(
+                    and_(
+                        User.departement_id == current_user.departement_id,
+                        User.role == RoleEnum.CHEF_SERVICE
+                    )
+                )
+            )
+            chef_service = chef_result.scalar_one_or_none()
+            
+            if chef_service:
+                valideur_id = chef_service.id
+                print(f"Employé → Chef de service trouvé: {chef_service.nom} {chef_service.prenom} (ID: {chef_service.id})")
+            else:
+                # Pas de chef de service dans le département, chercher un DRH
+                drh_result = await db.execute(
+                    select(User).where(User.role == RoleEnum.DRH).limit(1)
+                )
+                drh = drh_result.scalar_one_or_none()
+                if drh:
+                    valideur_id = drh.id
+                    print(f"Pas de chef de service → DRH trouvé: {drh.nom} {drh.prenom} (ID: {drh.id})")
+                else:
+                    print(f"Aucun valideur trouvé (ni chef de service ni DRH)")
+    else:
+        # Utilisateur sans département
+        print(f"Utilisateur {current_user.nom} sans département : pas de valideur automatique")
     
     # Créer la demande avec tous les champs calculés
     demande = DemandeConge(
@@ -280,8 +306,14 @@ async def create_demande_conge(
         working_time=working_days,
         real_time=total_days,
         demandeur_id=current_user.id,
-        valideur_id=valideur_id  # Assigner automatiquement le chef de service
+        valideur_id=valideur_id,
+        statut=statut_initial  # EN_ATTENTE ou APPROUVEE selon le cas
     )
+    
+    # Si c'est automatiquement approuvé (DRH), ajouter la date de réponse
+    if statut_initial == StatutDemandeEnum.APPROUVEE:
+        demande.date_reponse = datetime.utcnow()
+        demande.commentaire_validation = "Approbation automatique (DRH)"
     
     db.add(demande)
     await db.commit()
@@ -1405,6 +1437,114 @@ async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erreur lors de la génération du PDF: {str(e)}"
         )
+
+@router.get("/calendrier/{year}/{month}")
+async def get_calendrier_conges(
+    year: int,
+    month: int,
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """Récupère les congés approuvés pour un mois donné pour l'affichage du calendrier"""
+    from datetime import date
+    
+    # Créer les dates de début et fin du mois
+    debut_mois = date(year, month, 1)
+    if month == 12:
+        fin_mois = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        fin_mois = date(year, month + 1, 1) - timedelta(days=1)
+    
+    # Déterminer quels congés voir selon le rôle
+    if current_user.role == RoleEnum.EMPLOYE:
+        # Employé : seulement ses propres congés
+        query = select(DemandeConge).where(
+            and_(
+                DemandeConge.demandeur_id == current_user.id,
+                DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                or_(
+                    # Congés qui commencent dans le mois
+                    and_(
+                        DemandeConge.date_debut >= debut_mois,
+                        DemandeConge.date_debut <= fin_mois
+                    ),
+                    # Congés qui se terminent dans le mois
+                    and_(
+                        DemandeConge.date_fin >= debut_mois,
+                        DemandeConge.date_fin <= fin_mois
+                    ),
+                    # Congés qui englobent le mois
+                    and_(
+                        DemandeConge.date_debut <= debut_mois,
+                        DemandeConge.date_fin >= fin_mois
+                    )
+                )
+            )
+        )
+    
+    elif current_user.role == RoleEnum.CHEF_SERVICE:
+        # Chef de service : congés de son département
+        query = select(DemandeConge).where(
+            and_(
+                DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                DemandeConge.demandeur_id.in_(
+                    select(User.id).where(
+                        User.departement_id == current_user.departement_id
+                    )
+                ),
+                or_(
+                    and_(
+                        DemandeConge.date_debut >= debut_mois,
+                        DemandeConge.date_debut <= fin_mois
+                    ),
+                    and_(
+                        DemandeConge.date_fin >= debut_mois,
+                        DemandeConge.date_fin <= fin_mois
+                    ),
+                    and_(
+                        DemandeConge.date_debut <= debut_mois,
+                        DemandeConge.date_fin >= fin_mois
+                    )
+                )
+            )
+        )
+    
+    else:  # DRH
+        # DRH : tous les congés de l'organisation
+        query = select(DemandeConge).where(
+            and_(
+                DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                or_(
+                    and_(
+                        DemandeConge.date_debut >= debut_mois,
+                        DemandeConge.date_debut <= fin_mois
+                    ),
+                    and_(
+                        DemandeConge.date_fin >= debut_mois,
+                        DemandeConge.date_fin <= fin_mois
+                    ),
+                    and_(
+                        DemandeConge.date_debut <= debut_mois,
+                        DemandeConge.date_fin >= fin_mois
+                    )
+                )
+            )
+        )
+    
+    result = await db.execute(query.order_by(DemandeConge.date_debut))
+    demandes = result.scalars().all()
+    
+    # Enrichir avec les informations utilisateur
+    enriched_demandes = []
+    for demande in demandes:
+        enriched = await enrich_demande_with_user_info(db, demande)
+        enriched_demandes.append(enriched)
+    
+    return {
+        "month": month,
+        "year": year,
+        "congres": enriched_demandes
+    }
 
 
  
