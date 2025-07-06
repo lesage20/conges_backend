@@ -48,6 +48,9 @@ class DemandeConge(Base):
     demande_annulation = Column(Boolean, default=False)  # Indique si une annulation est demandée
     motif_annulation = Column(Text, nullable=True)  # Motif de la demande d'annulation
     date_demande_annulation = Column(DateTime, nullable=True)  # Date de la demande d'annulation
+    # Champ pour l'attestation PDF
+    attestation_pdf = Column(String, nullable=True)  # Nom du fichier PDF de l'attestation
+    date_generation_attestation = Column(DateTime, nullable=True)  # Date de génération de l'attestation
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -108,6 +111,9 @@ class DemandeCongeRead(BaseModel):
     demande_annulation: Optional[bool] = None
     motif_annulation: Optional[str] = None
     date_demande_annulation: Optional[datetime] = None
+    # Champs pour l'attestation PDF
+    attestation_pdf: Optional[str] = None
+    date_generation_attestation: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     # Informations utilisateur

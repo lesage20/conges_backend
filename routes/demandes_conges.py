@@ -476,6 +476,11 @@ async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> 
                 actions.append(
                     ActionDynamique(action="demander_annulation", label="Demander annulation", icon="undo", color="orange")
                 )
+                # Ajouter l'action de téléchargement d'attestation si elle existe
+                if demande.attestation_pdf:
+                    actions.append(
+                        ActionDynamique(action="telecharger_attestation", label="Télécharger attestation", icon="download", color="green")
+                    )
     
     # Chef de service
     elif current_user.role == RoleEnum.CHEF_SERVICE:
@@ -484,6 +489,11 @@ async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> 
                 actions.append(
                     ActionDynamique(action="demander_annulation", label="Demander annulation", icon="undo", color="orange")
                 )
+                # Ajouter l'action de téléchargement d'attestation si elle existe
+                if demande.attestation_pdf:
+                    actions.append(
+                        ActionDynamique(action="telecharger_attestation", label="Télécharger attestation", icon="download", color="green")
+                    )
         else:  # Demandes de son équipe
             if demande.statut == StatutDemandeEnum.EN_ATTENTE:
                 actions.extend([
@@ -656,172 +666,197 @@ async def generer_attestation(
     # Récupérer les informations de l'employé
     enriched_demande = await enrich_demande_with_user_info(db, demande)
     
-    # Générer le contenu de l'attestation
-    attestation_html = await generate_attestation_html(enriched_demande)
+    # Générer le PDF de l'attestation
+    pdf_filename = await generate_attestation_pdf(enriched_demande)
+    
+    # Mettre à jour la demande avec le nom du fichier PDF
+    from datetime import datetime
+    demande.attestation_pdf = pdf_filename
+    demande.date_generation_attestation = datetime.utcnow()
+    await db.commit()
     
     return {
-        "content": attestation_html,
-        "filename": f"attestation_conge_{enriched_demande.user.nom}_{enriched_demande.user.prenom}_{demande.date_debut.strftime('%Y%m%d')}.html"
+        "message": "Attestation générée avec succès",
+        "filename": pdf_filename
     }
 
-async def generate_attestation_html(demande: DemandeCongeRead) -> str:
-    """Génère le contenu HTML de l'attestation de congé"""
+async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
+    """Génère une attestation de congé au format PDF"""
     from datetime import datetime
+    import os
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_JUSTIFY
     
-    template = f"""
-    <!DOCTYPE html>
-    <html lang="fr">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Attestation de Congé</title>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                line-height: 1.6;
-                max-width: 800px;
-                margin: 0 auto;
-                padding: 20px;
-                background-color: #f5f5f5;
-            }}
-            .attestation {{
-                background-color: white;
-                padding: 40px;
-                border-radius: 10px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            }}
-            .header {{
-                text-align: center;
-                margin-bottom: 40px;
-                border-bottom: 2px solid #3B82F6;
-                padding-bottom: 20px;
-            }}
-            .company-name {{
-                font-size: 24px;
-                font-weight: bold;
-                color: #1F2937;
-                margin-bottom: 10px;
-            }}
-            .title {{
-                font-size: 20px;
-                font-weight: bold;
-                color: #3B82F6;
-                margin: 30px 0;
-                text-align: center;
-            }}
-            .content {{
-                font-size: 16px;
-                color: #374151;
-                margin-bottom: 20px;
-            }}
-            .employee-info {{
-                background-color: #F3F4F6;
-                padding: 20px;
-                border-radius: 8px;
-                margin: 20px 0;
-            }}
-            .info-row {{
-                display: flex;
-                margin-bottom: 10px;
-            }}
-            .info-label {{
-                font-weight: bold;
-                min-width: 200px;
-            }}
-            .signature-section {{
-                display: flex;
-                justify-content: space-between;
-                margin-top: 60px;
-            }}
-            .signature-box {{
-                text-align: center;
-                width: 200px;
-            }}
-            .signature-line {{
-                border-bottom: 1px solid #000;
-                margin: 40px 0 10px 0;
-            }}
-            .date-section {{
-                text-align: right;
-                margin-top: 40px;
-                font-weight: bold;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="attestation">
-            <div class="header">
-                <div class="company-name">ENTREPRISE XYZ</div>
-                <div>Direction des Ressources Humaines</div>
-            </div>
-            
-            <div class="title">ATTESTATION DE CONGÉ</div>
-            
-            <div class="content">
-                <p>Je soussigné(e), Directeur(rice) des Ressources Humaines de l'entreprise XYZ, atteste par la présente que :</p>
-                
-                <div class="employee-info">
-                    <div class="info-row">
-                        <div class="info-label">Nom et Prénom :</div>
-                        <div>{demande.user.nom} {demande.user.prenom}</div>
-                    </div>
-                    <div class="info-row">
-                        <div class="info-label">Email :</div>
-                        <div>{demande.user.email}</div>
-                    </div>
-                    <div class="info-row">
-                        <div class="info-label">Département :</div>
-                        <div>{demande.user.departement or 'Non spécifié'}</div>
-                    </div>
-                    <div class="info-row">
-                        <div class="info-label">Poste :</div>
-                        <div>{demande.user.role or 'Non spécifié'}</div>
-                    </div>
-                </div>
-                
-                <p>A bénéficié d'un congé payé dans les conditions suivantes :</p>
-                
-                <div class="employee-info">
-                    <div class="info-row">
-                        <div class="info-label">Type de congé :</div>
-                        <div>Congés payés</div>
-                    </div>
-                    <div class="info-row">
-                        <div class="info-label">Période :</div>
-                        <div>Du {demande.date_debut.strftime('%d/%m/%Y')} au {demande.date_fin.strftime('%d/%m/%Y')}</div>
-                    </div>
-                    <div class="info-row">
-                        <div class="info-label">Durée :</div>
-                        <div>{demande.nombre_jours}</div>
-                    </div>
-                    <div class="info-row">
-                        <div class="info-label">Motif :</div>
-                        <div>{demande.motif or 'Congés annuels'}</div>
-                    </div>
-                </div>
-                
-                <p>Cette attestation est délivrée à l'intéressé(e) pour servir et valoir ce que de droit.</p>
-            </div>
-            
-            <div class="date-section">
-                Fait à Abidjan, le {datetime.now().strftime('%d/%m/%Y')}
-            </div>
-            
-            <div class="signature-section">
-                <div class="signature-box">
-                    <div>L'employé(e)</div>
-                    <div class="signature-line"></div>
-                    <div>{demande.user.nom} {demande.user.prenom}</div>
-                </div>
-                <div class="signature-box">
-                    <div>Le DRH</div>
-                    <div class="signature-line"></div>
-                    <div>Signature et cachet</div>
-                </div>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
+    # Créer le nom du fichier PDF
+    pdf_filename = f"attestation_conge_{demande.user.nom}_{demande.user.prenom}_{demande.date_debut.strftime('%Y%m%d')}.pdf"
+    pdf_path = os.path.join("attestations", pdf_filename)
     
-    return template 
+    # Créer le document PDF
+    doc = SimpleDocTemplate(pdf_path, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+    
+    # Obtenir les styles
+    styles = getSampleStyleSheet()
+    
+    # Créer des styles personnalisés
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        spaceAfter=30*mm,
+        alignment=TA_CENTER,
+        textColor=colors.black
+    )
+    
+    header_style = ParagraphStyle(
+        'CustomHeader',
+        parent=styles['Normal'],
+        fontSize=12,
+        spaceAfter=5*mm,
+        alignment=TA_CENTER,
+        textColor=colors.black
+    )
+    
+    content_style = ParagraphStyle(
+        'CustomContent',
+        parent=styles['Normal'],
+        fontSize=12,
+        spaceAfter=10*mm,
+        alignment=TA_JUSTIFY,
+        leftIndent=15*mm,
+        textColor=colors.black
+    )
+    
+    date_style = ParagraphStyle(
+        'CustomDate',
+        parent=styles['Normal'],
+        fontSize=12,
+        spaceAfter=30*mm,
+        alignment=TA_RIGHT,
+        textColor=colors.black
+    )
+    
+    signature_style = ParagraphStyle(
+        'CustomSignature',
+        parent=styles['Normal'],
+        fontSize=12,
+        alignment=TA_CENTER,
+        textColor=colors.black
+    )
+    
+    # Contenu du document
+    story = []
+    
+    # En-tête
+    story.append(Paragraph("<b>RÉPUBLIQUE DE CÔTE D'IVOIRE</b>", header_style))
+    story.append(Paragraph("Union - Discipline - Travail", header_style))
+    story.append(Spacer(1, 10*mm))
+    story.append(Paragraph("<b>NANGUI ABROGOUA</b>", header_style))
+    story.append(Spacer(1, 20*mm))
+    
+    # Ligne de séparation
+    line_table = Table([['_' * 80]], colWidths=[180*mm])
+    line_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 20),
+    ]))
+    story.append(line_table)
+    
+    # Titre
+    story.append(Paragraph("<b><u>ATTESTATION DE CONGÉ</u></b>", title_style))
+    
+    # Contenu principal  
+    story.append(Paragraph(
+        f"Nous soussignés organisation Nangui Abrogoua, attestons que Monsieur/Madame "
+        f"<b>{demande.user.nom} {demande.user.prenom}</b>, fait partie de notre personnel en qualité de "
+        f"<b>{demande.user.role or 'employé'}</b> depuis sa date d'embauche.", 
+        content_style
+    ))
+    
+    story.append(Paragraph(
+        f"Il bénéficie d'un congé allant du <b>{demande.date_debut.strftime('%d/%m/%Y')}</b> "
+        f"au <b>{demande.date_fin.strftime('%d/%m/%Y')}</b> inclus.", 
+        content_style
+    ))
+    
+    story.append(Paragraph(
+        "En foi de quoi, cette attestation lui est délivrée pour servir et valoir ce que de droit.", 
+        content_style
+    ))
+    
+    # Date
+    story.append(Spacer(1, 20*mm))
+    story.append(Paragraph(f"Fait à Abidjan, le {datetime.now().strftime('%d/%m/%Y')}", date_style))
+    
+    # Signature
+    story.append(Spacer(1, 30*mm))
+    story.append(Paragraph("Nom et signature du DRH", signature_style))
+    story.append(Spacer(1, 30*mm))
+    
+    # Ligne de signature
+    signature_table = Table([['_' * 30]], colWidths=[80*mm])
+    signature_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+    ]))
+    story.append(signature_table)
+    
+    # Construire le PDF
+    doc.build(story)
+    
+    return pdf_filename
+
+
+@router.get("/{demande_id}/download-attestation")
+async def download_attestation(
+    demande_id: uuid.UUID,
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """Télécharge l'attestation PDF d'une demande de congé"""
+    import os
+    from fastapi.responses import FileResponse
+    
+    result = await db.execute(
+        select(DemandeConge).where(DemandeConge.id == demande_id)
+    )
+    demande = result.scalar_one_or_none()
+    
+    if not demande:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Demande de congé non trouvée"
+        )
+    
+    # Vérifier les permissions
+    if current_user.role == RoleEnum.EMPLOYE and demande.demandeur_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vous ne pouvez télécharger que vos propres attestations"
+        )
+    
+    # Vérifier qu'une attestation existe
+    if not demande.attestation_pdf:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Aucune attestation n'a été générée pour cette demande"
+        )
+    
+    # Vérifier que le fichier existe
+    pdf_path = os.path.join("attestations", demande.attestation_pdf)
+    if not os.path.exists(pdf_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Le fichier d'attestation n'a pas été trouvé"
+        )
+    
+    # Retourner le fichier PDF
+    return FileResponse(
+        path=pdf_path,
+        filename=demande.attestation_pdf,
+        media_type="application/pdf"
+    ) 
