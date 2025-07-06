@@ -14,6 +14,7 @@ from models.demande_conge import (
 )
 from models.user import User, RoleEnum
 from utils.dependencies import get_current_user, require_manager
+from utils.date_calculator import calculate_working_days, calculate_total_days, format_nombre_jours
 
 router = APIRouter(prefix="/demandes-conges", tags=["demandes-conges"])
 
@@ -149,10 +150,22 @@ async def create_demande_conge(
     current_user: User = Depends(get_current_user)
 ):
     """Crée une nouvelle demande de congé"""
+    
+    # Calculer automatiquement le nombre de jours ouvrables
+    working_days = calculate_working_days(demande_data.date_debut, demande_data.date_fin)
+    total_days = calculate_total_days(demande_data.date_debut, demande_data.date_fin)
+    nombre_jours_formatted = format_nombre_jours(working_days, total_days)
+    
+    # Créer la demande avec le nombre de jours calculé
     demande = DemandeConge(
-        **demande_data.dict(),
+        type_conge=demande_data.type_conge,
+        date_debut=demande_data.date_debut,
+        date_fin=demande_data.date_fin,
+        motif=demande_data.motif,
+        nombre_jours=nombre_jours_formatted,
         demandeur_id=current_user.id
     )
+    
     db.add(demande)
     await db.commit()
     await db.refresh(demande)
@@ -190,8 +203,20 @@ async def update_demande_conge(
         )
     
     update_data = demande_data.dict(exclude_unset=True)
+    
+    # Mettre à jour les champs
     for field, value in update_data.items():
-        setattr(demande, field, value)
+        if field != 'nombre_jours':  # On ne permet pas de modifier manuellement le nombre de jours
+            setattr(demande, field, value)
+    
+    # Recalculer le nombre de jours si les dates ont changé
+    date_debut = demande_data.date_debut if demande_data.date_debut else demande.date_debut
+    date_fin = demande_data.date_fin if demande_data.date_fin else demande.date_fin
+    
+    if demande_data.date_debut or demande_data.date_fin:
+        working_days = calculate_working_days(date_debut, date_fin)
+        total_days = calculate_total_days(date_debut, date_fin)
+        demande.nombre_jours = format_nombre_jours(working_days, total_days)
     
     await db.commit()
     await db.refresh(demande)

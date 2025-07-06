@@ -52,10 +52,10 @@ class DemandeCongeBase(BaseModel):
     type_conge: TypeCongeEnum
     date_debut: date
     date_fin: date
-    nombre_jours: str
     motif: Optional[str] = None
 
 class DemandeCongeCreate(DemandeCongeBase):
+    # nombre_jours sera calculé automatiquement côté backend
     pass
 
 class DemandeCongeUpdate(BaseModel):
@@ -67,9 +67,14 @@ class DemandeCongeUpdate(BaseModel):
     statut: Optional[StatutDemandeEnum] = None
     commentaire_validation: Optional[str] = None
 
-class DemandeCongeRead(DemandeCongeBase):
+class DemandeCongeRead(BaseModel):
     id: uuid.UUID
     demandeur_id: uuid.UUID
+    type_conge: TypeCongeEnum
+    date_debut: date
+    date_fin: date
+    nombre_jours: str
+    motif: Optional[str] = None
     statut: StatutDemandeEnum
     date_demande: datetime
     date_reponse: Optional[datetime] = None
