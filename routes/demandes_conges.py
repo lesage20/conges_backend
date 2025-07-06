@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -463,6 +463,104 @@ async def get_dashboard_stats(
         )
         stats[statut.value] = len(result.scalars().all())
     
+    # KPI spécifiques aux employés
+    if current_user.role == RoleEnum.EMPLOYE:
+        # Calculer les jours restants pour l'année en cours
+        annee_courante = date.today().year
+        debut_annee = date(annee_courante, 1, 1)
+        fin_annee = date(annee_courante, 12, 31)
+        
+        # Jours déjà pris (demandes approuvées cette année)
+        demandes_approuvees_annee = await db.execute(
+            select(DemandeConge).where(
+                and_(
+                    DemandeConge.demandeur_id == current_user.id,
+                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                    DemandeConge.date_debut >= debut_annee,
+                    DemandeConge.date_debut <= fin_annee
+                )
+            )
+        )
+        jours_pris = sum(demande.working_time or 0 for demande in demandes_approuvees_annee.scalars().all())
+        
+        # Jours en attente (demandes en attente cette année)
+        demandes_attente_annee = await db.execute(
+            select(DemandeConge).where(
+                and_(
+                    DemandeConge.demandeur_id == current_user.id,
+                    DemandeConge.statut == StatutDemandeEnum.EN_ATTENTE,
+                    DemandeConge.date_debut >= debut_annee,
+                    DemandeConge.date_debut <= fin_annee
+                )
+            )
+        )
+        jours_attente = sum(demande.working_time or 0 for demande in demandes_attente_annee.scalars().all())
+        
+        # Jours restants = solde total - jours pris - jours en attente
+        jours_restants = max(0, current_user.solde_conges - jours_pris - jours_attente)
+        
+        # Vérifier si l'employé a un congé en cours
+        aujourd_hui = date.today()
+        conge_en_cours = await db.execute(
+            select(DemandeConge).where(
+                and_(
+                    DemandeConge.demandeur_id == current_user.id,
+                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                    DemandeConge.date_debut <= aujourd_hui,
+                    DemandeConge.date_fin >= aujourd_hui
+                )
+            )
+        )
+        conge_actuel = conge_en_cours.scalar_one_or_none()
+        
+        # Activité récente (toutes les demandes de l'employé)
+        activite_recente = await db.execute(
+            select(DemandeConge).where(
+                DemandeConge.demandeur_id == current_user.id
+            ).order_by(DemandeConge.created_at.desc()).limit(5)
+        )
+        
+        activite_list = []
+        for demande in activite_recente.scalars().all():
+            activite_list.append({
+                "id": str(demande.id),
+                "message": f"Demande de congé {demande.statut.value}",
+                "type": demande.statut.value,
+                "date_debut": demande.date_debut.strftime('%d/%m/%Y'),
+                "date_fin": demande.date_fin.strftime('%d/%m/%Y'),
+                "working_time": demande.working_time,
+                "motif": demande.motif,
+                "time": demande.created_at.strftime('%d/%m/%Y')
+            })
+        
+        kpi_data = {
+            "demandes_approuvees": stats.get("approuvee", 0),
+            "demandes_refusees": stats.get("refusee", 0),
+            "demandes_en_attente": stats.get("en_attente", 0),
+            "jours_restants": jours_restants,
+            "solde_total": current_user.solde_conges,
+            "jours_pris": jours_pris,
+            "jours_en_attente": jours_attente,
+            "annee": annee_courante,
+            "activite_recente": activite_list
+        }
+        
+        # Ajouter les infos du congé en cours s'il y en a un
+        if conge_actuel:
+            jours_restants_conge = (conge_actuel.date_fin - aujourd_hui).days + 1
+            kpi_data["conge_en_cours"] = {
+                "date_debut": conge_actuel.date_debut.strftime('%d/%m/%Y'),
+                "date_fin": conge_actuel.date_fin.strftime('%d/%m/%Y'),
+                "jours_restants": max(0, jours_restants_conge),
+                "motif": conge_actuel.motif
+            }
+        
+        return {
+            "stats_par_statut": stats,
+            "total_demandes": sum(stats.values()),
+            "kpi_employe": kpi_data
+        }
+    
     return {
         "stats_par_statut": stats,
         "total_demandes": sum(stats.values())
@@ -686,7 +784,6 @@ async def generer_attestation(
     attestation_url = f"{base_url}/attestations/{pdf_filename}"
     
     # Mettre à jour la demande avec le nom du fichier PDF et l'URL
-    from datetime import datetime
     demande.attestation_pdf = pdf_filename
     demande.attestation_url = attestation_url
     demande.date_generation_attestation = datetime.utcnow()
@@ -700,7 +797,6 @@ async def generer_attestation(
 
 async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
     """Génère une attestation de congé au format PDF"""
-    from datetime import datetime
     import os
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
