@@ -1547,16 +1547,12 @@ async def get_calendrier_conges(
             )
         )
     
-    elif current_user.role == RoleEnum.CHEF_SERVICE or (current_user.role == RoleEnum.DRH and current_user.departement_id):
+    elif current_user.role == RoleEnum.CHEF_SERVICE :
         # Chef de service : congés de son département
         query = select(DemandeConge).where(
             and_(
                 DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
-                DemandeConge.demandeur_id.in_(
-                    select(User.id).where(
-                        User.departement_id == current_user.departement_id
-                    )
-                ),
+                DemandeConge.valideur_id == current_user.id,
                 or_(
                     and_(
                         DemandeConge.date_debut >= debut_mois,
@@ -1599,6 +1595,7 @@ async def get_calendrier_conges(
     result = await db.execute(query.order_by(DemandeConge.date_debut))
     demandes = result.scalars().all()
     
+    print(demandes)
     # Enrichir avec les informations utilisateur
     enriched_demandes = []
     for demande in demandes:
@@ -1608,7 +1605,7 @@ async def get_calendrier_conges(
     return {
         "month": month,
         "year": year,
-        "congres": enriched_demandes
+        "conges": enriched_demandes
     }
 
 
