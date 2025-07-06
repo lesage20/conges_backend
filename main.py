@@ -2,7 +2,9 @@ import sys
 from pathlib import Path
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+import os
 
 # Ajouter le répertoire courant au PYTHONPATH
 current_dir = Path(__file__).parent
@@ -18,6 +20,11 @@ async def lifespan(app: FastAPI):
     # Créer les tables au démarrage
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    
+    # Créer le dossier attestations s'il n'existe pas
+    attestations_dir = Path("attestations")
+    attestations_dir.mkdir(exist_ok=True)
+    
     yield
     # Cleanup au shutdown (si nécessaire)
 
@@ -49,6 +56,9 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(departements_router, prefix="/api")
 app.include_router(demandes_conges_router, prefix="/api")
+
+# Configuration des fichiers statiques pour les attestations
+app.mount("/attestations", StaticFiles(directory="attestations"), name="attestations")
 
 @app.get("/")
 async def root():

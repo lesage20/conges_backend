@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
@@ -69,6 +69,14 @@ async def enrich_demande_with_user_info(db: AsyncSession, demande: DemandeConge)
         'date_reponse': demande.date_reponse,
         'commentaire_validation': demande.commentaire_validation,
         'valideur_id': demande.valideur_id,
+        # Champs pour les demandes d'annulation
+        'demande_annulation': demande.demande_annulation,
+        'motif_annulation': demande.motif_annulation,
+        'date_demande_annulation': demande.date_demande_annulation,
+        # Champs pour l'attestation PDF
+        'attestation_pdf': demande.attestation_pdf,
+        'attestation_url': demande.attestation_url,
+        'date_generation_attestation': demande.date_generation_attestation,
         'created_at': demande.created_at,
         'updated_at': demande.updated_at,
         'user': user_info,
@@ -461,26 +469,29 @@ async def get_dashboard_stats(
     }
 
 async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> list[ActionDynamique]:
-    """Calcule les actions disponibles pour une demande selon le rôle et l'état"""
+    """Détermine les actions disponibles pour une demande selon le rôle de l'utilisateur"""
     actions = []
     
     # Employé
     if current_user.role == RoleEnum.EMPLOYE:
-        if demande.demandeur_id == current_user.id:  # Ses propres demandes
-            if demande.statut == StatutDemandeEnum.EN_ATTENTE:
-                actions.extend([
-                    ActionDynamique(action="modifier", label="Modifier", icon="edit", color="blue"),
-                    ActionDynamique(action="annuler", label="Annuler", icon="trash", color="red")
-                ])
-            elif demande.statut == StatutDemandeEnum.APPROUVEE:
+        # Seulement pour ses propres demandes
+        if demande.demandeur_id != current_user.id:
+            return actions
+        
+        if demande.statut == StatutDemandeEnum.EN_ATTENTE:
+            actions.extend([
+                ActionDynamique(action="modifier", label="Modifier", icon="edit", color="blue"),
+                ActionDynamique(action="annuler", label="Annuler", icon="trash", color="red")
+            ])
+        elif demande.statut == StatutDemandeEnum.APPROUVEE:
+            actions.append(
+                ActionDynamique(action="demander_annulation", label="Demander annulation", icon="undo", color="orange")
+            )
+            # Ajouter l'action de téléchargement d'attestation si elle existe
+            if demande.attestation_url:
                 actions.append(
-                    ActionDynamique(action="demander_annulation", label="Demander annulation", icon="undo", color="orange")
+                    ActionDynamique(action="telecharger_attestation", label="Télécharger attestation", icon="download", color="green")
                 )
-                # Ajouter l'action de téléchargement d'attestation si elle existe
-                if demande.attestation_pdf:
-                    actions.append(
-                        ActionDynamique(action="telecharger_attestation", label="Télécharger attestation", icon="download", color="green")
-                    )
     
     # Chef de service
     elif current_user.role == RoleEnum.CHEF_SERVICE:
@@ -490,7 +501,7 @@ async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> 
                     ActionDynamique(action="demander_annulation", label="Demander annulation", icon="undo", color="orange")
                 )
                 # Ajouter l'action de téléchargement d'attestation si elle existe
-                if demande.attestation_pdf:
+                if demande.attestation_url:
                     actions.append(
                         ActionDynamique(action="telecharger_attestation", label="Télécharger attestation", icon="download", color="green")
                     )
@@ -636,6 +647,7 @@ async def traiter_annulation(
 @router.get("/{demande_id}/attestation")
 async def generer_attestation(
     demande_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_database),
     current_user: User = Depends(get_current_user)
 ):
@@ -669,194 +681,144 @@ async def generer_attestation(
     # Générer le PDF de l'attestation
     pdf_filename = await generate_attestation_pdf(enriched_demande)
     
-    # Mettre à jour la demande avec le nom du fichier PDF
+    # Construire l'URL complète de l'attestation
+    base_url = f"{request.url.scheme}://{request.url.netloc}"
+    attestation_url = f"{base_url}/attestations/{pdf_filename}"
+    
+    # Mettre à jour la demande avec le nom du fichier PDF et l'URL
     from datetime import datetime
     demande.attestation_pdf = pdf_filename
+    demande.attestation_url = attestation_url
     demande.date_generation_attestation = datetime.utcnow()
     await db.commit()
     
     return {
         "message": "Attestation générée avec succès",
-        "filename": pdf_filename
+        "filename": pdf_filename,
+        "url": attestation_url
     }
 
 async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
     """Génère une attestation de congé au format PDF"""
     from datetime import datetime
     import os
+    from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import mm
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_JUSTIFY
     
-    # Créer le nom du fichier PDF
-    pdf_filename = f"attestation_conge_{demande.user.nom}_{demande.user.prenom}_{demande.date_debut.strftime('%Y%m%d')}.pdf"
+    # Créer le nom du fichier PDF (sans caractères spéciaux)
+    nom_clean = ''.join(c for c in demande.user.nom if c.isalnum())
+    prenom_clean = ''.join(c for c in demande.user.prenom if c.isalnum())
+    pdf_filename = f"attestation_{nom_clean}_{prenom_clean}_{demande.date_debut.strftime('%Y%m%d')}.pdf"
     pdf_path = os.path.join("attestations", pdf_filename)
     
-    # Créer le document PDF
-    doc = SimpleDocTemplate(pdf_path, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
-    
-    # Obtenir les styles
-    styles = getSampleStyleSheet()
-    
-    # Créer des styles personnalisés
-    title_style = ParagraphStyle(
-        'CustomTitle',
-        parent=styles['Heading1'],
-        fontSize=16,
-        spaceAfter=30*mm,
-        alignment=TA_CENTER,
-        textColor=colors.black
-    )
-    
-    header_style = ParagraphStyle(
-        'CustomHeader',
-        parent=styles['Normal'],
-        fontSize=12,
-        spaceAfter=5*mm,
-        alignment=TA_CENTER,
-        textColor=colors.black
-    )
-    
-    content_style = ParagraphStyle(
-        'CustomContent',
-        parent=styles['Normal'],
-        fontSize=12,
-        spaceAfter=10*mm,
-        alignment=TA_JUSTIFY,
-        leftIndent=15*mm,
-        textColor=colors.black
-    )
-    
-    date_style = ParagraphStyle(
-        'CustomDate',
-        parent=styles['Normal'],
-        fontSize=12,
-        spaceAfter=30*mm,
-        alignment=TA_RIGHT,
-        textColor=colors.black
-    )
-    
-    signature_style = ParagraphStyle(
-        'CustomSignature',
-        parent=styles['Normal'],
-        fontSize=12,
-        alignment=TA_CENTER,
-        textColor=colors.black
-    )
-    
-    # Contenu du document
-    story = []
-    
-    # En-tête
-    story.append(Paragraph("<b>RÉPUBLIQUE DE CÔTE D'IVOIRE</b>", header_style))
-    story.append(Paragraph("Union - Discipline - Travail", header_style))
-    story.append(Spacer(1, 10*mm))
-    story.append(Paragraph("<b>NANGUI ABROGOUA</b>", header_style))
-    story.append(Spacer(1, 20*mm))
-    
-    # Ligne de séparation
-    line_table = Table([['_' * 80]], colWidths=[180*mm])
-    line_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTSIZE', (0, 0), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 20),
-    ]))
-    story.append(line_table)
-    
-    # Titre
-    story.append(Paragraph("<b><u>ATTESTATION DE CONGÉ</u></b>", title_style))
-    
-    # Contenu principal  
-    story.append(Paragraph(
-        f"Nous soussignés organisation Nangui Abrogoua, attestons que Monsieur/Madame "
-        f"<b>{demande.user.nom} {demande.user.prenom}</b>, fait partie de notre personnel en qualité de "
-        f"<b>{demande.user.role or 'employé'}</b> depuis sa date d'embauche.", 
-        content_style
-    ))
-    
-    story.append(Paragraph(
-        f"Il bénéficie d'un congé allant du <b>{demande.date_debut.strftime('%d/%m/%Y')}</b> "
-        f"au <b>{demande.date_fin.strftime('%d/%m/%Y')}</b> inclus.", 
-        content_style
-    ))
-    
-    story.append(Paragraph(
-        "En foi de quoi, cette attestation lui est délivrée pour servir et valoir ce que de droit.", 
-        content_style
-    ))
-    
-    # Date
-    story.append(Spacer(1, 20*mm))
-    story.append(Paragraph(f"Fait à Abidjan, le {datetime.now().strftime('%d/%m/%Y')}", date_style))
-    
-    # Signature
-    story.append(Spacer(1, 30*mm))
-    story.append(Paragraph("Nom et signature du DRH", signature_style))
-    story.append(Spacer(1, 30*mm))
-    
-    # Ligne de signature
-    signature_table = Table([['_' * 30]], colWidths=[80*mm])
-    signature_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTSIZE', (0, 0), (-1, -1), 12),
-    ]))
-    story.append(signature_table)
-    
-    # Construire le PDF
-    doc.build(story)
-    
-    return pdf_filename
+    try:
+        # Créer le canvas
+        c = canvas.Canvas(pdf_path, pagesize=A4)
+        width, height = A4
+        
+        # Variables pour simplifier
+        left_margin = 50
+        y_pos = height - 100
+        
+        # En-tête centré
+        c.setFont("Helvetica-Bold", 14)
+        title1 = "REPUBLIQUE DE COTE D'IVOIRE"
+        text_width = c.stringWidth(title1, "Helvetica-Bold", 14)
+        c.drawString((width - text_width) / 2, y_pos, title1)
+        y_pos -= 20
+        
+        c.setFont("Helvetica", 12)
+        title2 = "Union - Discipline - Travail"
+        text_width = c.stringWidth(title2, "Helvetica", 12)
+        c.drawString((width - text_width) / 2, y_pos, title2)
+        y_pos -= 40
+        
+        c.setFont("Helvetica-Bold", 12)
+        title3 = "NANGUI ABROGOUA"
+        text_width = c.stringWidth(title3, "Helvetica-Bold", 12)
+        c.drawString((width - text_width) / 2, y_pos, title3)
+        y_pos -= 40
+        
+        # Ligne de séparation
+        c.line(left_margin, y_pos, width - left_margin, y_pos)
+        y_pos -= 40
+        
+        # Titre principal
+        c.setFont("Helvetica-Bold", 16)
+        main_title = "ATTESTATION DE CONGE"
+        text_width = c.stringWidth(main_title, "Helvetica-Bold", 16)
+        c.drawString((width - text_width) / 2, y_pos, main_title)
+        y_pos -= 60
+        
+        # Contenu
+        c.setFont("Helvetica", 12)
+        
+        # Données
+        nom_complet = f"{demande.user.nom} {demande.user.prenom}"
+        role_text = demande.user.role or "employe"
+        date_debut = demande.date_debut.strftime('%d/%m/%Y')
+        date_fin = demande.date_fin.strftime('%d/%m/%Y')
+        date_today = datetime.now().strftime('%d/%m/%Y')
+        
+        # Paragraphe 1
+        text1 = "Nous soussignes organisation Nangui Abrogoua, attestons que"
+        c.drawString(left_margin, y_pos, text1)
+        y_pos -= 15
+        
+        text2 = f"Monsieur/Madame {nom_complet}, fait partie de notre personnel"
+        c.drawString(left_margin, y_pos, text2)
+        y_pos -= 15
+        
+        text3 = f"en qualite de {role_text} depuis sa date d'embauche."
+        c.drawString(left_margin, y_pos, text3)
+        y_pos -= 30
+        
+        # Paragraphe 2
+        text4 = f"Il beneficie d'un conge allant du {date_debut} au {date_fin} inclus."
+        c.drawString(left_margin, y_pos, text4)
+        y_pos -= 30
+        
+        # Paragraphe 3
+        text5 = "En foi de quoi, cette attestation lui est delivree pour servir"
+        c.drawString(left_margin, y_pos, text5)
+        y_pos -= 15
+        
+        text6 = "et valoir ce que de droit."
+        c.drawString(left_margin, y_pos, text6)
+        y_pos -= 60
+        
+        # Date (alignée à droite)
+        date_text = f"Fait a Abidjan, le {date_today}"
+        text_width = c.stringWidth(date_text, "Helvetica", 12)
+        c.drawString(width - left_margin - text_width, y_pos, date_text)
+        y_pos -= 80
+        
+        # Signature centrée
+        signature_text = "Nom et signature du DRH"
+        text_width = c.stringWidth(signature_text, "Helvetica", 12)
+        c.drawString((width - text_width) / 2, y_pos, signature_text)
+        y_pos -= 30
+        
+        # Ligne de signature
+        line_length = 150
+        start_x = (width - line_length) / 2
+        end_x = start_x + line_length
+        c.line(start_x, y_pos, end_x, y_pos)
+        
+        # Sauvegarder
+        c.save()
+        
+        print(f"PDF généré avec succès: {pdf_path}")
+        return pdf_filename
+        
+    except Exception as e:
+        print(f"Erreur lors de la génération du PDF: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur lors de la génération du PDF: {str(e)}"
+        )
 
 
-@router.get("/{demande_id}/download-attestation")
-async def download_attestation(
-    demande_id: uuid.UUID,
-    db: AsyncSession = Depends(get_database),
-    current_user: User = Depends(get_current_user)
-):
-    """Télécharge l'attestation PDF d'une demande de congé"""
-    import os
-    from fastapi.responses import FileResponse
-    
-    result = await db.execute(
-        select(DemandeConge).where(DemandeConge.id == demande_id)
-    )
-    demande = result.scalar_one_or_none()
-    
-    if not demande:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Demande de congé non trouvée"
-        )
-    
-    # Vérifier les permissions
-    if current_user.role == RoleEnum.EMPLOYE and demande.demandeur_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Vous ne pouvez télécharger que vos propres attestations"
-        )
-    
-    # Vérifier qu'une attestation existe
-    if not demande.attestation_pdf:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Aucune attestation n'a été générée pour cette demande"
-        )
-    
-    # Vérifier que le fichier existe
-    pdf_path = os.path.join("attestations", demande.attestation_pdf)
-    if not os.path.exists(pdf_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Le fichier d'attestation n'a pas été trouvé"
-        )
-    
-    # Retourner le fichier PDF
-    return FileResponse(
-        path=pdf_path,
-        filename=demande.attestation_pdf,
-        media_type="application/pdf"
-    ) 
+ 
