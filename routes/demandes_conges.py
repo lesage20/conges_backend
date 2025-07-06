@@ -99,7 +99,7 @@ async def get_demandes_conges(
     if current_user.role == RoleEnum.EMPLOYE:
         query = query.where(DemandeConge.demandeur_id == current_user.id)
     elif current_user.role == RoleEnum.CHEF_SERVICE:
-        # Le chef de service voit ses demandes + celles de son département
+        # Chef de service : seulement les demandes de son département (employés)
         query = query.where(
             or_(
                 DemandeConge.demandeur_id == current_user.id,
@@ -406,18 +406,62 @@ async def valider_demande_conge(
             detail="Seules les demandes en attente peuvent être validées"
         )
     
-    # Vérifier que le chef de service peut valider cette demande
+    # Vérifier les permissions de validation
     if current_user.role == RoleEnum.CHEF_SERVICE:
-        # Récupérer l'utilisateur demandeur pour vérifier le département
+        # Chef de service : seulement les demandes des employés de son département
         demandeur_result = await db.execute(
             select(User).where(User.id == demande.demandeur_id)
         )
         demandeur = demandeur_result.scalar_one_or_none()
         
-        if not demandeur or demandeur.departement_id != current_user.departement_id:
+        if not demandeur or demandeur.departement_id != current_user.departement_id or demandeur.role != RoleEnum.EMPLOYE:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Vous ne pouvez valider que les demandes de votre département"
+                detail="Vous ne pouvez valider que les demandes des employés de votre département"
+            )
+    
+    elif current_user.role == RoleEnum.DRH:
+        # DRH peut valider :
+        # 1. Demandes des chefs de service
+        # 2. Demandes des employés RH
+        # 3. Demandes des employés de son département (si il en a un)
+        demandeur_result = await db.execute(
+            select(User).where(User.id == demande.demandeur_id)
+        )
+        demandeur = demandeur_result.scalar_one_or_none()
+        
+        if not demandeur:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Demandeur non trouvé"
+            )
+        
+        can_validate = False
+        
+        # 1. Peut valider les demandes des chefs de service
+        if demandeur.role == RoleEnum.CHEF_SERVICE:
+            can_validate = True
+        
+        # 2. Peut valider les demandes des employés RH (département contenant "RH", "ressources humaines", etc.)
+        elif demandeur.role == RoleEnum.EMPLOYE and demandeur.departement_id:
+            # Récupérer le département du demandeur
+            dept_result = await db.execute(
+                select(Departement).where(Departement.id == demandeur.departement_id)
+            )
+            dept_demandeur = dept_result.scalar_one_or_none()
+            
+            if dept_demandeur and any(keyword in dept_demandeur.nom.lower() for keyword in 
+                                    ["ressources humaines", "rh", "drh", "direction des ressources humaines"]):
+                can_validate = True
+        
+        # 3. Peut valider les demandes des employés de son département (si le DRH a un département)
+        if not can_validate and current_user.departement_id and demandeur.departement_id == current_user.departement_id and demandeur.role == RoleEnum.EMPLOYE:
+            can_validate = True
+        
+        if not can_validate:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Vous ne pouvez valider cette demande selon votre périmètre de responsabilité"
             )
     
     demande.statut = validation_data.statut
@@ -476,7 +520,7 @@ async def get_dashboard_stats(
     if current_user.role == RoleEnum.EMPLOYE:
         base_query = base_query.where(DemandeConge.demandeur_id == current_user.id)
     elif current_user.role == RoleEnum.CHEF_SERVICE:
-        # Pour chef de service : demandes des employés de son département
+        # Chef de service : demandes des employés de son département
         base_query = base_query.where(
             DemandeConge.demandeur_id.in_(
                 select(User.id).where(
@@ -487,6 +531,7 @@ async def get_dashboard_stats(
                 )
             )
         )
+    # DRH : garder toutes les demandes pour les stats globales
     
     # Statistiques par statut
     stats = {}
@@ -1135,18 +1180,37 @@ async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> 
     
     # DRH
     elif current_user.role == RoleEnum.DRH:
-        if demande.statut == StatutDemandeEnum.EN_ATTENTE:
-            # DRH peut juste voir les demandes en attente, pas les valider directement
-            pass
-        elif demande.statut == StatutDemandeEnum.APPROUVEE:
-            actions.append(
-                ActionDynamique(action="generer_attestation", label="Générer attestation", icon="document", color="blue")
-            )
-        elif demande.statut == StatutDemandeEnum.DEMANDE_ANNULATION:
-            actions.extend([
-                ActionDynamique(action="approuver_annulation", label="Approuver annulation", icon="check", color="green"),
-                ActionDynamique(action="refuser_annulation", label="Refuser annulation", icon="x", color="red")
-            ])
+        if demande.demandeur_id == current_user.id:  # Ses propres demandes (auto-approuvées)
+            if demande.statut == StatutDemandeEnum.APPROUVEE:
+                actions.append(
+                    ActionDynamique(action="generer_attestation", label="Générer attestation", icon="document", color="blue")
+                )
+        else:  # Demandes des autres
+            if demande.statut == StatutDemandeEnum.EN_ATTENTE:
+                # Le DRH peut valider les demandes des chefs de service et des employés RH
+                # Plus celles de son équipe si il a un département assigné
+                can_validate = False
+                
+                # Récupérer le demandeur pour vérifier son rôle et département
+                # Note: On devrait passer ces infos en paramètre pour éviter les requêtes DB ici
+                # Mais pour simplifier, on assume que le DRH peut valider selon sa logique métier
+                # Cette logique sera vérifiée dans l'endpoint de validation
+                can_validate = True  # Le DRH peut potentiellement valider toutes les demandes en attente
+                
+                if can_validate:
+                    actions.extend([
+                        ActionDynamique(action="approuver", label="Approuver", icon="check", color="green"),
+                        ActionDynamique(action="refuser", label="Refuser", icon="x", color="red")
+                    ])
+            elif demande.statut == StatutDemandeEnum.APPROUVEE:
+                actions.append(
+                    ActionDynamique(action="generer_attestation", label="Générer attestation", icon="document", color="blue")
+                )
+            elif demande.statut == StatutDemandeEnum.DEMANDE_ANNULATION:
+                actions.extend([
+                    ActionDynamique(action="approuver_annulation", label="Approuver annulation", icon="check", color="green"),
+                    ActionDynamique(action="refuser_annulation", label="Refuser annulation", icon="x", color="red")
+                ])
     
     # Action de détails disponible pour tous
     actions.append(
@@ -1483,7 +1547,7 @@ async def get_calendrier_conges(
             )
         )
     
-    elif current_user.role == RoleEnum.CHEF_SERVICE:
+    elif current_user.role == RoleEnum.CHEF_SERVICE or (current_user.role == RoleEnum.DRH and current_user.departement_id):
         # Chef de service : congés de son département
         query = select(DemandeConge).where(
             and_(

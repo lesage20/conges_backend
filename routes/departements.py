@@ -152,10 +152,11 @@ async def assign_chef_departement(
             detail="Utilisateur non trouvé"
         )
     
-    if chef.role != RoleEnum.CHEF_SERVICE:
+    # Permettre aux DRH et aux chefs de service d'être chef de département
+    if chef.role not in [RoleEnum.CHEF_SERVICE, RoleEnum.DRH]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="L'utilisateur doit avoir le rôle 'chef_service'"
+            detail="L'utilisateur doit avoir le rôle 'chef_service' ou 'drh'"
         )
     
     # Assigner le chef et affecter l'utilisateur au département
