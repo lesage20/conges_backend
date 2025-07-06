@@ -722,7 +722,7 @@ async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
         
         # En-tête centré
         c.setFont("Helvetica-Bold", 14)
-        title1 = "REPUBLIQUE DE COTE D'IVOIRE"
+        title1 = "RÉPUBLIQUE DE CÔTE D'IVOIRE"
         text_width = c.stringWidth(title1, "Helvetica-Bold", 14)
         c.drawString((width - text_width) / 2, y_pos, title1)
         y_pos -= 20
@@ -734,7 +734,7 @@ async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
         y_pos -= 40
         
         c.setFont("Helvetica-Bold", 12)
-        title3 = "NANGUI ABROGOUA"
+        title3 = "ENTREPRISE"
         text_width = c.stringWidth(title3, "Helvetica-Bold", 12)
         c.drawString((width - text_width) / 2, y_pos, title3)
         y_pos -= 40
@@ -745,7 +745,7 @@ async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
         
         # Titre principal
         c.setFont("Helvetica-Bold", 16)
-        main_title = "ATTESTATION DE CONGE"
+        main_title = "ATTESTATION DE CONGÉ"
         text_width = c.stringWidth(main_title, "Helvetica-Bold", 16)
         c.drawString((width - text_width) / 2, y_pos, main_title)
         y_pos -= 60
@@ -761,7 +761,7 @@ async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
         date_today = datetime.now().strftime('%d/%m/%Y')
         
         # Paragraphe 1
-        text1 = "Nous soussignes organisation Nangui Abrogoua, attestons que"
+        text1 = "Nous soussignés entreprise, attestons que"
         c.drawString(left_margin, y_pos, text1)
         y_pos -= 15
         
@@ -769,17 +769,17 @@ async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
         c.drawString(left_margin, y_pos, text2)
         y_pos -= 15
         
-        text3 = f"en qualite de {role_text} depuis sa date d'embauche."
+        text3 = f"en qualité de {role_text} depuis sa date d'embauche."
         c.drawString(left_margin, y_pos, text3)
         y_pos -= 30
         
         # Paragraphe 2
-        text4 = f"Il beneficie d'un conge allant du {date_debut} au {date_fin} inclus."
+        text4 = f"Il bénéficie d'un congé allant du {date_debut} au {date_fin} inclus."
         c.drawString(left_margin, y_pos, text4)
         y_pos -= 30
         
         # Paragraphe 3
-        text5 = "En foi de quoi, cette attestation lui est delivree pour servir"
+        text5 = "En foi de quoi, cette attestation lui est délivrée pour servir"
         c.drawString(left_margin, y_pos, text5)
         y_pos -= 15
         
@@ -788,7 +788,7 @@ async def generate_attestation_pdf(demande: DemandeCongeRead) -> str:
         y_pos -= 60
         
         # Date (alignée à droite)
-        date_text = f"Fait a Abidjan, le {date_today}"
+        date_text = f"Fait à Abidjan, le {date_today}"
         text_width = c.stringWidth(date_text, "Helvetica", 12)
         c.drawString(width - left_margin - text_width, y_pos, date_text)
         y_pos -= 80
