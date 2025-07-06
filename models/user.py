@@ -44,7 +44,7 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     def solde_conges(self):
         """Calcule automatiquement le solde de congés selon les critères d'ancienneté"""
         if not self.date_embauche:
-            return 25  # Valeur par défaut
+            return 0  # Valeur par défaut
         
         aujourd_hui = date.today()
         date_embauche = self.date_embauche

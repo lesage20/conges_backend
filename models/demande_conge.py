@@ -33,7 +33,7 @@ class DemandeConge(Base):
     type_conge = Column(SQLEnum(TypeCongeEnum), nullable=False)
     date_debut = Column(Date, nullable=False)
     date_fin = Column(Date, nullable=False)
-    nombre_jours = Column(String, nullable=False)
+    nombre_jours = Column(String, nullable=True)
     motif = Column(Text)
     statut = Column(SQLEnum(StatutDemandeEnum), default=StatutDemandeEnum.EN_ATTENTE)
     date_demande = Column(DateTime, default=datetime.utcnow)

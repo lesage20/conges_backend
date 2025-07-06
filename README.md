@@ -49,12 +49,12 @@ uv run python utils/create_admin.py
 uv run python main.py
 ```
 
-L'API sera disponible à l'adresse : `http://localhost:8000`
+L'API sera disponible à l'adresse : `http://localhost:6500`
 
 ## 📚 Documentation API
 
-- **Swagger UI** : http://localhost:8000/docs
-- **ReDoc** : http://localhost:8000/redoc
+- **Swagger UI** : http://localhost:6500/docs
+- **ReDoc** : http://localhost:6500/redoc
 
 ## 🔐 Authentification
 
@@ -71,7 +71,7 @@ L'API sera disponible à l'adresse : `http://localhost:8000`
 
 ```bash
 # POST /api/auth/jwt/login
-curl -X POST "http://localhost:8000/api/auth/jwt/login" \
+curl -X POST "http://localhost:6500/api/auth/jwt/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=admin@company.com&password=admin123"
 ```
@@ -151,21 +151,21 @@ Réponse :
 
 ```bash
 # 1. Se connecter
-TOKEN=$(curl -s -X POST "http://localhost:8000/api/auth/jwt/login" \
+TOKEN=$(curl -s -X POST "http://localhost:6500/api/auth/jwt/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=admin@company.com&password=admin123" | \
   jq -r '.access_token')
 
 # 2. Récupérer son profil
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/api/users/me"
+  "http://localhost:6500/api/users/me"
 
 # 3. Voir les départements
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/api/departements/"
+  "http://localhost:6500/api/departements/"
 
 # 4. Créer une demande de congé
-curl -X POST "http://localhost:8000/api/demandes-conges/" \
+curl -X POST "http://localhost:6500/api/demandes-conges/" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
