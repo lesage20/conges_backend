@@ -181,6 +181,46 @@ async def get_pending_demandes(
     
     return enriched_demandes
 
+@router.get("/can-create-new")
+async def can_create_new_demande(
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """Vérifie si l'utilisateur peut créer une nouvelle demande de congé"""
+    
+    # Vérifier s'il y a une demande en cours (en_attente ou approuvée et non terminée)
+    query = select(DemandeConge).where(
+        and_(
+            DemandeConge.demandeur_id == current_user.id,
+            or_(
+                DemandeConge.statut == StatutDemandeEnum.EN_ATTENTE,
+                and_(
+                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                    DemandeConge.date_fin >= date.today()  # Congé pas encore terminé
+                )
+            )
+        )
+    )
+    
+    result = await db.execute(query)
+    demande_en_cours = result.scalars().first()
+    
+    if demande_en_cours:
+        # Enrichir la demande avec les informations utilisateur
+        demande_enrichie = await enrich_demande_with_user_info(db, demande_en_cours)
+        
+        return {
+            "can_create": False,
+            "reason": "Vous avez déjà une demande en cours",
+            "existing_demande": demande_enrichie
+        }
+    
+    return {
+        "can_create": True,
+        "reason": None,
+        "existing_demande": None
+    }
+
 @router.get("/{demande_id}", response_model=DemandeCongeRead)
 async def get_demande_conge(
     demande_id: uuid.UUID,
@@ -1607,6 +1647,8 @@ async def get_calendrier_conges(
         "year": year,
         "conges": enriched_demandes
     }
+
+
 
 
  
