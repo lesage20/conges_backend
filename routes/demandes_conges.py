@@ -257,7 +257,8 @@ async def create_demande_conge(
         departement = dept_result.scalar_one_or_none()
         
         # Vérifier si c'est le département RH (par nom)
-        if departement and departement.nom.lower() in ["ressources humaines", "rh", "drh"]:
+        if departement and any(keyword in departement.nom.lower() for keyword in 
+                              ["ressources humaines", "rh", "drh", "direction des ressources humaines"]):
             # Employé RH : validation directe par le DRH
             drh_result = await db.execute(
                 select(User).where(User.role == RoleEnum.DRH).limit(1)

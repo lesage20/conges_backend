@@ -15,6 +15,10 @@ async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_
 class Base(DeclarativeBase):
     pass
 
+# Fonction pour obtenir l'URL de la base de données
+def get_database_url() -> str:
+    return DATABASE_URL
+
 # Fonction pour obtenir une session de base de données
 async def get_database() -> AsyncSession:
     async with async_session_maker() as session:

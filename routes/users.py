@@ -46,7 +46,7 @@ async def get_all_users(
 ):
     """
     Récupère tous les utilisateurs selon le rôle :
-    - DRH : tous les employés et chefs de service  
+    - DRH : tous les employés et chefs de service (pour la gestion globale)
     - Chef de service : tous les employés de son département
     - Employé : accès refusé
     """
@@ -91,10 +91,35 @@ async def get_my_team(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Alias pour /tous - utilisé pour la page "Mon Équipe"
     Récupère l'équipe selon le rôle de l'utilisateur connecté
+    - DRH : employés de son département (Direction des Ressources Humaines)
+    - Chef de service : employés de son département
+    - Employé : accès refusé
     """
-    return await get_all_users(db, current_user)
+    if current_user.role == RoleEnum.EMPLOYE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Les employés ne peuvent pas accéder à cette route"
+        )
+    
+    # Pour DRH et Chef de service : récupérer les employés de leur département
+    if not current_user.departement_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Utilisateur sans département assigné"
+        )
+    
+    result = await db.execute(
+        select(User)
+        .where(
+            User.departement_id == current_user.departement_id,
+            User.role == RoleEnum.EMPLOYE
+        )
+        .options(selectinload(User.departement))
+    )
+    
+    users = result.scalars().all()
+    return users
 
 @router.get("/managers", response_model=List[UserRead])
 async def get_managers(
