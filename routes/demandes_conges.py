@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -774,6 +774,281 @@ async def get_dashboard_stats(
             "stats_par_statut": stats_equipe,
             "total_demandes": sum(stats_equipe.values()),
             "kpi_chef_service": kpi_data
+        }
+    
+    # KPI spécifiques aux DRH
+    elif current_user.role == RoleEnum.DRH:
+        annee_courante = date.today().year
+        debut_annee = date(annee_courante, 1, 1)
+        fin_annee = date(annee_courante, 12, 31)
+        aujourd_hui = date.today()
+        
+        # Récupérer tous les départements
+        departements_result = await db.execute(select(Departement))
+        departements = departements_result.scalars().all()
+        
+        # Statistiques par département
+        stats_departements = []
+        for dept in departements:
+            # Récupérer les employés du département
+            employes_dept = await db.execute(
+                select(User).where(
+                    and_(
+                        User.departement_id == dept.id,
+                        User.role.in_([RoleEnum.EMPLOYE, RoleEnum.CHEF_SERVICE])
+                    )
+                )
+            )
+            employes_list = employes_dept.scalars().all()
+            
+            # Statistiques des demandes du département
+            stats_dept = {
+                "approuvee": 0,
+                "refusee": 0,
+                "en_attente": 0,
+                "demande_annulation": 0,
+                "annulee": 0
+            }
+            
+            if employes_list:
+                for statut in StatutDemandeEnum:
+                    result = await db.execute(
+                        select(DemandeConge).where(
+                            and_(
+                                DemandeConge.demandeur_id.in_([emp.id for emp in employes_list]),
+                                DemandeConge.statut == statut
+                            )
+                        )
+                    )
+                    stats_dept[statut.value] = len(result.scalars().all())
+            
+            # Employés actuellement en congé
+            conges_en_cours = await db.execute(
+                select(DemandeConge).where(
+                    and_(
+                        DemandeConge.demandeur_id.in_([emp.id for emp in employes_list]),
+                        DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                        DemandeConge.date_debut <= aujourd_hui,
+                        DemandeConge.date_fin >= aujourd_hui
+                    )
+                )
+            )
+            employes_en_conge = len(conges_en_cours.scalars().all())
+            
+            stats_departements.append({
+                "id": str(dept.id),
+                "nom": dept.nom,
+                "nombre_employes": len(employes_list),
+                "employes_presents": len(employes_list) - employes_en_conge,
+                "employes_en_conge": employes_en_conge,
+                "demandes_approuvees": stats_dept.get("approuvee", 0),
+                "demandes_refusees": stats_dept.get("refusee", 0),
+                "demandes_en_attente": stats_dept.get("en_attente", 0),
+                "demandes_annulation": stats_dept.get("demande_annulation", 0),
+                "total_demandes": sum(stats_dept.values()),
+                "solde_total": sum(emp.solde_conges or 0 for emp in employes_list),
+                "taux_presence": round((len(employes_list) - employes_en_conge) / len(employes_list) * 100, 1) if employes_list else 0
+            })
+        
+        # Calculer les stats globales
+        stats_globales = {
+            "approuvee": sum(dept["demandes_approuvees"] for dept in stats_departements),
+            "refusee": sum(dept["demandes_refusees"] for dept in stats_departements),
+            "en_attente": sum(dept["demandes_en_attente"] for dept in stats_departements),
+            "demande_annulation": sum(dept["demandes_annulation"] for dept in stats_departements),
+        }
+        
+        # Calculer les KPI globaux de l'organisation
+        total_employes = sum(dept["nombre_employes"] for dept in stats_departements)
+        total_absents = sum(dept["employes_en_conge"] for dept in stats_departements)
+        total_presents = total_employes - total_absents
+        
+        # Calculer les futurs absents du mois courant
+        debut_mois = aujourd_hui.replace(day=1)
+        fin_mois = debut_mois.replace(month=debut_mois.month + 1) if debut_mois.month < 12 else debut_mois.replace(year=debut_mois.year + 1, month=1)
+        fin_mois = fin_mois.replace(day=1) - timedelta(days=1)
+        
+        # Récupérer tous les employés
+        tous_employes = []
+        for dept in departements:
+            employes_dept = await db.execute(
+                select(User).where(
+                    and_(
+                        User.departement_id == dept.id,
+                        User.role.in_([RoleEnum.EMPLOYE, RoleEnum.CHEF_SERVICE])
+                    )
+                )
+            )
+            tous_employes.extend(employes_dept.scalars().all())
+        
+        # Congés approuvés qui touchent le mois courant
+        conges_mois_courant = await db.execute(
+            select(DemandeConge).where(
+                and_(
+                    DemandeConge.demandeur_id.in_([emp.id for emp in tous_employes]),
+                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                    or_(
+                        # Congés qui commencent dans le mois
+                        and_(
+                            DemandeConge.date_debut >= debut_mois,
+                            DemandeConge.date_debut <= fin_mois
+                        ),
+                        # Congés qui se terminent dans le mois
+                        and_(
+                            DemandeConge.date_fin >= debut_mois,
+                            DemandeConge.date_fin <= fin_mois
+                        ),
+                        # Congés qui englobent le mois
+                        and_(
+                            DemandeConge.date_debut <= debut_mois,
+                            DemandeConge.date_fin >= fin_mois
+                        )
+                    )
+                )
+            )
+        )
+        
+        # Compter les employés uniques qui seront absents ce mois
+        employes_absents_mois = set()
+        for conge in conges_mois_courant.scalars().all():
+            employes_absents_mois.add(conge.demandeur_id)
+        
+        total_absents_mois_courant = len(employes_absents_mois)
+        
+        # Ses propres infos de congés (comme employé)
+        mes_demandes_approuvees = await db.execute(
+            select(DemandeConge).where(
+                and_(
+                    DemandeConge.demandeur_id == current_user.id,
+                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                    DemandeConge.date_debut >= debut_annee,
+                    DemandeConge.date_debut <= fin_annee
+                )
+            )
+        )
+        mes_jours_pris = sum(demande.working_time or 0 for demande in mes_demandes_approuvees.scalars().all())
+        
+        mes_demandes_attente = await db.execute(
+            select(DemandeConge).where(
+                and_(
+                    DemandeConge.demandeur_id == current_user.id,
+                    DemandeConge.statut == StatutDemandeEnum.EN_ATTENTE,
+                    DemandeConge.date_debut >= debut_annee,
+                    DemandeConge.date_debut <= fin_annee
+                )
+            )
+        )
+        mes_jours_attente = sum(demande.working_time or 0 for demande in mes_demandes_attente.scalars().all())
+        
+        mes_jours_restants = max(0, current_user.solde_conges - mes_jours_pris - mes_jours_attente)
+        
+        # Vérifier si le DRH a un congé en cours
+        mon_conge_en_cours = await db.execute(
+            select(DemandeConge).where(
+                and_(
+                    DemandeConge.demandeur_id == current_user.id,
+                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
+                    DemandeConge.date_debut <= aujourd_hui,
+                    DemandeConge.date_fin >= aujourd_hui
+                )
+            )
+        )
+        mon_conge_actuel = mon_conge_en_cours.scalar_one_or_none()
+        
+        # Activité récente de toute l'organisation
+        activite_generale = await db.execute(
+            select(DemandeConge)
+            .join(User, DemandeConge.demandeur_id == User.id)
+            .where(User.role.in_([RoleEnum.EMPLOYE, RoleEnum.CHEF_SERVICE]))
+            .order_by(DemandeConge.created_at.desc())
+            .limit(5)
+        )
+        
+        activite_list = []
+        for demande in activite_generale.scalars().all():
+            # Récupérer l'utilisateur
+            result_user = await db.execute(
+                select(User).where(User.id == demande.demandeur_id)
+            )
+            employe = result_user.scalar_one_or_none()
+            if employe:
+                nom_employe = f"{employe.prenom} {employe.nom}"
+                nom_dept = employe.departement.nom if employe.departement else "Département non défini"
+                
+                # Définir le message selon le statut
+                if demande.statut == StatutDemandeEnum.APPROUVEE:
+                    message = f"{nom_employe} ({nom_dept}) - Congé approuvé"
+                elif demande.statut == StatutDemandeEnum.REFUSEE:
+                    message = f"{nom_employe} ({nom_dept}) - Congé refusé"
+                elif demande.statut == StatutDemandeEnum.EN_ATTENTE:
+                    message = f"{nom_employe} ({nom_dept}) - Demande en attente"
+                elif demande.statut == StatutDemandeEnum.DEMANDE_ANNULATION:
+                    message = f"{nom_employe} ({nom_dept}) - Demande d'annulation"
+                else:
+                    message = f"{nom_employe} ({nom_dept}) - Demande {demande.statut.value}"
+                
+                activite_list.append({
+                    "id": str(demande.id),
+                    "message": message,
+                    "type": demande.statut.value,
+                    "date_debut": demande.date_debut.strftime('%d/%m/%Y'),
+                    "date_fin": demande.date_fin.strftime('%d/%m/%Y'),
+                    "working_time": demande.working_time,
+                    "motif": demande.motif,
+                    "time": demande.created_at.strftime('%d/%m/%Y à %H:%M'),
+                    "employe": nom_employe,
+                    "departement": nom_dept
+                })
+        
+        kpi_data = {
+            # Vue d'ensemble par département
+            "departements": stats_departements,
+            # Stats globales
+            "stats_globales": stats_globales,
+            # KPI globaux de l'organisation
+            "kpi_globaux": {
+                "total_employes": total_employes,
+                "total_absents": total_absents,
+                "total_presents": total_presents,
+                "total_absents_mois_courant": total_absents_mois_courant,
+                "pourcentage_presence": round((total_presents / total_employes * 100), 1) if total_employes > 0 else 0,
+                "pourcentage_absence": round((total_absents / total_employes * 100), 1) if total_employes > 0 else 0,
+                "pourcentage_absents_mois": round((total_absents_mois_courant / total_employes * 100), 1) if total_employes > 0 else 0,
+                "mois_courant": aujourd_hui.strftime("%B %Y")
+            },
+            # Activité récente
+            "activite_recente": activite_list,
+            # Mes propres congés
+            "mes_conges": {
+                "jours_restants": mes_jours_restants,
+                "solde_total": current_user.solde_conges,
+                "jours_pris": mes_jours_pris,
+                "jours_en_attente": mes_jours_attente,
+                "annee": annee_courante
+            },
+            # Totaux organisation (anciens - pour compatibilité)
+            "totaux": {
+                "nombre_employes": total_employes,
+                "employes_presents": total_presents,
+                "employes_en_conge": total_absents,
+                "solde_total_organisation": sum(dept["solde_total"] for dept in stats_departements)
+            }
+        }
+        
+        # Ajouter ses infos de congé en cours s'il y en a un
+        if mon_conge_actuel:
+            jours_restants_conge = (mon_conge_actuel.date_fin - aujourd_hui).days + 1
+            kpi_data["mes_conges"]["conge_en_cours"] = {
+                "date_debut": mon_conge_actuel.date_debut.strftime('%d/%m/%Y'),
+                "date_fin": mon_conge_actuel.date_fin.strftime('%d/%m/%Y'),
+                "jours_restants": max(0, jours_restants_conge),
+                "motif": mon_conge_actuel.motif
+            }
+        
+        return {
+            "stats_par_statut": stats_globales,
+            "total_demandes": sum(stats_globales.values()),
+            "kpi_drh": kpi_data
         }
     
     return {
