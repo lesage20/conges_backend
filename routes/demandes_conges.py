@@ -548,6 +548,7 @@ async def cancel_demande_conge(
     await db.commit()
     return {"message": "Demande annulée avec succès"}
 
+
 @router.get("/stats/dashboard")
 async def get_dashboard_stats(
     db: AsyncSession = Depends(get_database),
@@ -1187,7 +1188,7 @@ async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> 
         if demande.statut == StatutDemandeEnum.EN_ATTENTE:
             actions.extend([
                 ActionDynamique(action="modifier", label="Modifier", icon="edit", color="blue"),
-                ActionDynamique(action="annuler", label="Annuler", icon="trash", color="red")
+                ActionDynamique(action="annuler", label="Supprimer", icon="trash", color="red")
             ])
         elif demande.statut == StatutDemandeEnum.APPROUVEE:
             actions.append(
