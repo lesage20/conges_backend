@@ -10,15 +10,73 @@ from sqlalchemy.orm import selectinload
 from models.database import get_database
 from models.demande_conge import (
     DemandeConge, DemandeCongeRead, DemandeCongeCreate, DemandeCongeUpdate, 
-    DemandeCongeValidation, StatutDemandeEnum, TypeCongeEnum
+    DemandeCongeValidation, StatutDemandeEnum, TypeCongeEnum, UserBasicInfo,
+    DemandeAnnulation, ActionDynamique, DemandeCongeWithActions
 )
 from models.user import User, RoleEnum
+from models.departement import Departement
 from utils.dependencies import get_current_user, require_manager
-from utils.date_calculator import calculate_working_days, calculate_total_days, format_nombre_jours
+from utils.date_calculator import calculate_days_details
 
 router = APIRouter(prefix="/demandes-conges", tags=["demandes-conges"])
 
-@router.get("/", response_model=List[DemandeCongeRead])
+async def create_user_basic_info_from_db(db: AsyncSession, user_id: uuid.UUID) -> Optional[UserBasicInfo]:
+    """Récupère les informations utilisateur de base depuis la DB"""
+    result = await db.execute(
+        select(User, Departement.nom.label('departement_nom'))
+        .outerjoin(Departement, User.departement_id == Departement.id)
+        .where(User.id == user_id)
+    )
+    row = result.first()
+    
+    if not row:
+        return None
+    
+    user = row[0]
+    departement_nom = row[1]
+    
+    return UserBasicInfo(
+        id=user.id,
+        nom=user.nom,
+        prenom=user.prenom,
+        email=user.email,
+        role=user.role.value if user.role else None,
+        departement=departement_nom
+    )
+
+async def enrich_demande_with_user_info(db: AsyncSession, demande: DemandeConge) -> DemandeCongeRead:
+    """Enrichit une demande avec les informations utilisateur et valideur"""
+    # Récupérer les informations du demandeur
+    user_info = await create_user_basic_info_from_db(db, demande.demandeur_id)
+    
+    # Récupérer les informations du valideur si assigné
+    valideur_info = None
+    if demande.valideur_id:
+        valideur_info = await create_user_basic_info_from_db(db, demande.valideur_id)
+    
+    demande_dict = {
+        'id': demande.id,
+        'demandeur_id': demande.demandeur_id,
+        'type_conge': demande.type_conge,
+        'date_debut': demande.date_debut,
+        'date_fin': demande.date_fin,
+        'nombre_jours': demande.nombre_jours,
+        'working_time': demande.working_time,
+        'real_time': demande.real_time,
+        'motif': demande.motif,
+        'statut': demande.statut,
+        'date_demande': demande.date_demande,
+        'date_reponse': demande.date_reponse,
+        'commentaire_validation': demande.commentaire_validation,
+        'valideur_id': demande.valideur_id,
+        'created_at': demande.created_at,
+        'updated_at': demande.updated_at,
+        'user': user_info,
+        'valideur': valideur_info
+    }
+    return DemandeCongeRead(**demande_dict)
+
+@router.get("/", response_model=List[DemandeCongeWithActions])
 async def get_demandes_conges(
     db: AsyncSession = Depends(get_database),
     current_user: User = Depends(get_current_user),
@@ -27,10 +85,7 @@ async def get_demandes_conges(
     limit: int = Query(50, le=100)
 ):
     """Récupère les demandes de congés selon le rôle de l'utilisateur"""
-    query = select(DemandeConge).options(
-        selectinload(DemandeConge.demandeur),
-        selectinload(DemandeConge.valideur)
-    )
+    query = select(DemandeConge)
     
     # Filtrer selon le rôle
     if current_user.role == RoleEnum.EMPLOYE:
@@ -40,14 +95,7 @@ async def get_demandes_conges(
         query = query.where(
             or_(
                 DemandeConge.demandeur_id == current_user.id,
-                DemandeConge.demandeur_id.in_(
-                    select(User.id).where(
-                        and_(
-                            User.departement_id == current_user.departement_id,
-                            User.role == RoleEnum.EMPLOYE
-                        )
-                    )
-                )
+                DemandeConge.valideur_id == current_user.id
             )
         )
     
@@ -61,7 +109,14 @@ async def get_demandes_conges(
     
     result = await db.execute(query)
     demandes = result.scalars().all()
-    return demandes
+    
+    # Enrichir avec les informations utilisateur et les actions
+    enriched_demandes = []
+    for demande in demandes:
+        enriched = await enrich_demande_with_actions(db, demande, current_user)
+        enriched_demandes.append(enriched)
+    
+    return enriched_demandes
 
 @router.get("/mes-demandes", response_model=List[DemandeCongeRead])
 async def get_my_demandes(
@@ -72,14 +127,17 @@ async def get_my_demandes(
     result = await db.execute(
         select(DemandeConge)
         .where(DemandeConge.demandeur_id == current_user.id)
-        .options(
-            selectinload(DemandeConge.demandeur),
-            selectinload(DemandeConge.valideur)
-        )
         .order_by(DemandeConge.date_demande.desc())
     )
     demandes = result.scalars().all()
-    return demandes
+    
+    # Enrichir avec les informations utilisateur
+    enriched_demandes = []
+    for demande in demandes:
+        enriched = await enrich_demande_with_user_info(db, demande)
+        enriched_demandes.append(enriched)
+    
+    return enriched_demandes
 
 @router.get("/en-attente", response_model=List[DemandeCongeRead])
 async def get_pending_demandes(
@@ -89,9 +147,6 @@ async def get_pending_demandes(
     """Récupère les demandes en attente de validation (Manager/DRH uniquement)"""
     query = select(DemandeConge).where(
         DemandeConge.statut == StatutDemandeEnum.EN_ATTENTE
-    ).options(
-        selectinload(DemandeConge.demandeur),
-        selectinload(DemandeConge.valideur)
     )
     
     if current_user.role == RoleEnum.CHEF_SERVICE:
@@ -109,7 +164,14 @@ async def get_pending_demandes(
     
     result = await db.execute(query.order_by(DemandeConge.date_demande.asc()))
     demandes = result.scalars().all()
-    return demandes
+    
+    # Enrichir avec les informations utilisateur
+    enriched_demandes = []
+    for demande in demandes:
+        enriched = await enrich_demande_with_user_info(db, demande)
+        enriched_demandes.append(enriched)
+    
+    return enriched_demandes
 
 @router.get("/{demande_id}", response_model=DemandeCongeRead)
 async def get_demande_conge(
@@ -119,12 +181,7 @@ async def get_demande_conge(
 ):
     """Récupère une demande de congé par son ID"""
     result = await db.execute(
-        select(DemandeConge)
-        .where(DemandeConge.id == demande_id)
-        .options(
-            selectinload(DemandeConge.demandeur),
-            selectinload(DemandeConge.valideur)
-        )
+        select(DemandeConge).where(DemandeConge.id == demande_id)
     )
     demande = result.scalar_one_or_none()
     
@@ -141,7 +198,7 @@ async def get_demande_conge(
             detail="Vous ne pouvez voir que vos propres demandes"
         )
     
-    return demande
+    return await enrich_demande_with_user_info(db, demande)
 
 @router.post("/", response_model=DemandeCongeRead)
 async def create_demande_conge(
@@ -151,25 +208,78 @@ async def create_demande_conge(
 ):
     """Crée une nouvelle demande de congé"""
     
-    # Calculer automatiquement le nombre de jours ouvrables
-    working_days = calculate_working_days(demande_data.date_debut, demande_data.date_fin)
-    total_days = calculate_total_days(demande_data.date_debut, demande_data.date_fin)
-    nombre_jours_formatted = format_nombre_jours(working_days, total_days)
+    # Calculer automatiquement les jours avec les nouvelles fonctions
+    working_days, total_days, formatted_string = calculate_days_details(
+        demande_data.date_debut, 
+        demande_data.date_fin
+    )
     
-    # Créer la demande avec le nombre de jours calculé
+    # Trouver le valideur approprié selon la hiérarchie
+    valideur_id = None
+    
+    if current_user.role == RoleEnum.CHEF_SERVICE:
+        # Si l'utilisateur est chef de service, chercher un DRH pour validation
+        drh_result = await db.execute(
+            select(User).where(User.role == RoleEnum.DRH).limit(1)
+        )
+        drh = drh_result.scalar_one_or_none()
+        if drh:
+            valideur_id = drh.id
+            print(f"Chef de service → DRH trouvé: {drh.nom} {drh.prenom} (ID: {drh.id})")
+        else:
+            print("Aucun DRH trouvé pour valider la demande du chef de service")
+            
+    elif current_user.role == RoleEnum.EMPLOYE and current_user.departement_id:
+        # Pour un employé, chercher le chef de service de son département
+        chef_result = await db.execute(
+            select(User).where(
+                and_(
+                    User.departement_id == current_user.departement_id,
+                    User.role == RoleEnum.CHEF_SERVICE
+                )
+            )
+        )
+        chef_service = chef_result.scalar_one_or_none()
+        
+        if chef_service:
+            valideur_id = chef_service.id
+            print(f"Employé → Chef de service trouvé: {chef_service.nom} {chef_service.prenom} (ID: {chef_service.id})")
+        else:
+            # Pas de chef de service dans le département, chercher un DRH
+            drh_result = await db.execute(
+                select(User).where(User.role == RoleEnum.DRH).limit(1)
+            )
+            drh = drh_result.scalar_one_or_none()
+            if drh:
+                valideur_id = drh.id
+                print(f"Pas de chef de service → DRH trouvé: {drh.nom} {drh.prenom} (ID: {drh.id})")
+            else:
+                print(f"Aucun valideur trouvé (ni chef de service ni DRH)")
+    else:
+        # Utilisateur sans département ou rôle DRH
+        if current_user.role == RoleEnum.DRH:
+            print("Utilisateur DRH : pas de valideur automatique assigné")
+        else:
+            print(f"Utilisateur {current_user.nom} sans département : pas de valideur automatique")
+    
+    # Créer la demande avec tous les champs calculés
     demande = DemandeConge(
         type_conge=demande_data.type_conge,
         date_debut=demande_data.date_debut,
         date_fin=demande_data.date_fin,
         motif=demande_data.motif,
-        nombre_jours=nombre_jours_formatted,
-        demandeur_id=current_user.id
+        nombre_jours=formatted_string,
+        working_time=working_days,
+        real_time=total_days,
+        demandeur_id=current_user.id,
+        valideur_id=valideur_id  # Assigner automatiquement le chef de service
     )
     
     db.add(demande)
     await db.commit()
     await db.refresh(demande)
-    return demande
+    
+    return await enrich_demande_with_user_info(db, demande)
 
 @router.put("/{demande_id}", response_model=DemandeCongeRead)
 async def update_demande_conge(
@@ -202,25 +312,33 @@ async def update_demande_conge(
             detail="Seules les demandes en attente peuvent être modifiées"
         )
     
+    # Mettre à jour les champs modifiés
     update_data = demande_data.dict(exclude_unset=True)
     
-    # Mettre à jour les champs
+    # Recalculer les jours si les dates ont changé
+    if 'date_debut' in update_data or 'date_fin' in update_data:
+        new_date_debut = update_data.get('date_debut', demande.date_debut)
+        new_date_fin = update_data.get('date_fin', demande.date_fin)
+        
+        working_days, total_days, formatted_string = calculate_days_details(
+            new_date_debut, 
+            new_date_fin
+        )
+        
+        update_data['nombre_jours'] = formatted_string
+        update_data['working_time'] = working_days
+        update_data['real_time'] = total_days
+    
+    # Appliquer les modifications
     for field, value in update_data.items():
-        if field != 'nombre_jours':  # On ne permet pas de modifier manuellement le nombre de jours
-            setattr(demande, field, value)
+        setattr(demande, field, value)
     
-    # Recalculer le nombre de jours si les dates ont changé
-    date_debut = demande_data.date_debut if demande_data.date_debut else demande.date_debut
-    date_fin = demande_data.date_fin if demande_data.date_fin else demande.date_fin
-    
-    if demande_data.date_debut or demande_data.date_fin:
-        working_days = calculate_working_days(date_debut, date_fin)
-        total_days = calculate_total_days(date_debut, date_fin)
-        demande.nombre_jours = format_nombre_jours(working_days, total_days)
+    demande.updated_at = datetime.utcnow()
     
     await db.commit()
     await db.refresh(demande)
-    return demande
+    
+    return await enrich_demande_with_user_info(db, demande)
 
 @router.post("/{demande_id}/valider", response_model=DemandeCongeRead)
 async def valider_demande_conge(
@@ -231,9 +349,7 @@ async def valider_demande_conge(
 ):
     """Valide ou refuse une demande de congé (Manager/DRH uniquement)"""
     result = await db.execute(
-        select(DemandeConge)
-        .where(DemandeConge.id == demande_id)
-        .options(selectinload(DemandeConge.demandeur))
+        select(DemandeConge).where(DemandeConge.id == demande_id)
     )
     demande = result.scalar_one_or_none()
     
@@ -251,7 +367,13 @@ async def valider_demande_conge(
     
     # Vérifier que le chef de service peut valider cette demande
     if current_user.role == RoleEnum.CHEF_SERVICE:
-        if demande.demandeur.departement_id != current_user.departement_id:
+        # Récupérer l'utilisateur demandeur pour vérifier le département
+        demandeur_result = await db.execute(
+            select(User).where(User.id == demande.demandeur_id)
+        )
+        demandeur = demandeur_result.scalar_one_or_none()
+        
+        if not demandeur or demandeur.departement_id != current_user.departement_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Vous ne pouvez valider que les demandes de votre département"
@@ -264,7 +386,8 @@ async def valider_demande_conge(
     
     await db.commit()
     await db.refresh(demande)
-    return demande
+    
+    return await enrich_demande_with_user_info(db, demande)
 
 @router.delete("/{demande_id}")
 async def cancel_demande_conge(
@@ -335,4 +458,370 @@ async def get_dashboard_stats(
     return {
         "stats_par_statut": stats,
         "total_demandes": sum(stats.values())
-    } 
+    }
+
+async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> list[ActionDynamique]:
+    """Calcule les actions disponibles pour une demande selon le rôle et l'état"""
+    actions = []
+    
+    # Employé
+    if current_user.role == RoleEnum.EMPLOYE:
+        if demande.demandeur_id == current_user.id:  # Ses propres demandes
+            if demande.statut == StatutDemandeEnum.EN_ATTENTE:
+                actions.extend([
+                    ActionDynamique(action="modifier", label="Modifier", icon="edit", color="blue"),
+                    ActionDynamique(action="annuler", label="Annuler", icon="trash", color="red")
+                ])
+            elif demande.statut == StatutDemandeEnum.APPROUVEE:
+                actions.append(
+                    ActionDynamique(action="demander_annulation", label="Demander annulation", icon="undo", color="orange")
+                )
+    
+    # Chef de service
+    elif current_user.role == RoleEnum.CHEF_SERVICE:
+        if demande.demandeur_id == current_user.id:  # Ses propres demandes
+            if demande.statut == StatutDemandeEnum.APPROUVEE:
+                actions.append(
+                    ActionDynamique(action="demander_annulation", label="Demander annulation", icon="undo", color="orange")
+                )
+        else:  # Demandes de son équipe
+            if demande.statut == StatutDemandeEnum.EN_ATTENTE:
+                actions.extend([
+                    ActionDynamique(action="approuver", label="Approuver", icon="check", color="green"),
+                    ActionDynamique(action="refuser", label="Refuser", icon="x", color="red")
+                ])
+    
+    # DRH
+    elif current_user.role == RoleEnum.DRH:
+        if demande.statut == StatutDemandeEnum.EN_ATTENTE:
+            # DRH peut juste voir les demandes en attente, pas les valider directement
+            pass
+        elif demande.statut == StatutDemandeEnum.APPROUVEE:
+            actions.append(
+                ActionDynamique(action="generer_attestation", label="Générer attestation", icon="document", color="blue")
+            )
+        elif demande.statut == StatutDemandeEnum.DEMANDE_ANNULATION:
+            actions.extend([
+                ActionDynamique(action="approuver_annulation", label="Approuver annulation", icon="check", color="green"),
+                ActionDynamique(action="refuser_annulation", label="Refuser annulation", icon="x", color="red")
+            ])
+    
+    # Action de détails disponible pour tous
+    actions.append(
+        ActionDynamique(action="details", label="Voir détails", icon="eye", color="gray")
+    )
+    
+    return actions
+
+async def enrich_demande_with_actions(db: AsyncSession, demande: DemandeConge, current_user: User) -> DemandeCongeWithActions:
+    """Enrichit une demande avec les informations utilisateur et les actions disponibles"""
+    # D'abord enrichir avec les informations utilisateur
+    enriched_demande = await enrich_demande_with_user_info(db, demande)
+    
+    # Calculer les actions disponibles
+    actions = await get_actions_for_demande(demande, current_user)
+    
+    # Créer l'objet enrichi avec actions
+    demande_with_actions = DemandeCongeWithActions(
+        **enriched_demande.dict(),
+        actions=actions
+    )
+    
+    return demande_with_actions
+
+@router.post("/{demande_id}/demander-annulation", response_model=DemandeCongeRead)
+async def demander_annulation(
+    demande_id: uuid.UUID,
+    annulation_data: DemandeAnnulation,
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """Demande l'annulation d'une demande de congé approuvée"""
+    result = await db.execute(
+        select(DemandeConge).where(DemandeConge.id == demande_id)
+    )
+    demande = result.scalar_one_or_none()
+    
+    if not demande:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Demande de congé non trouvée"
+        )
+    
+    # Vérifier que l'utilisateur peut demander l'annulation
+    if current_user.role == RoleEnum.EMPLOYE and demande.demandeur_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vous ne pouvez demander l'annulation que de vos propres demandes"
+        )
+    
+    # Vérifier que la demande est approuvée
+    if demande.statut != StatutDemandeEnum.APPROUVEE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Seules les demandes approuvées peuvent être annulées"
+        )
+    
+    # Marquer la demande comme ayant une demande d'annulation
+    demande.statut = StatutDemandeEnum.DEMANDE_ANNULATION
+    demande.demande_annulation = True
+    demande.motif_annulation = annulation_data.motif_annulation
+    demande.date_demande_annulation = datetime.utcnow()
+    demande.updated_at = datetime.utcnow()
+    
+    await db.commit()
+    await db.refresh(demande)
+    
+    return await enrich_demande_with_user_info(db, demande)
+
+@router.post("/{demande_id}/traiter-annulation", response_model=DemandeCongeRead)
+async def traiter_annulation(
+    demande_id: uuid.UUID,
+    validation_data: DemandeCongeValidation,
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """Traite une demande d'annulation (DRH uniquement)"""
+    if current_user.role != RoleEnum.DRH:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Seul le DRH peut traiter les demandes d'annulation"
+        )
+    
+    result = await db.execute(
+        select(DemandeConge).where(DemandeConge.id == demande_id)
+    )
+    demande = result.scalar_one_or_none()
+    
+    if not demande:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Demande de congé non trouvée"
+        )
+    
+    if demande.statut != StatutDemandeEnum.DEMANDE_ANNULATION:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cette demande n'a pas de demande d'annulation en cours"
+        )
+    
+    # Traiter selon la décision du DRH
+    if validation_data.statut == StatutDemandeEnum.APPROUVEE:
+        # Annulation approuvée → La demande devient annulée
+        demande.statut = StatutDemandeEnum.ANNULEE
+    else:
+        # Annulation refusée → La demande redevient approuvée
+        demande.statut = StatutDemandeEnum.APPROUVEE
+        demande.demande_annulation = False
+    
+    demande.commentaire_validation = validation_data.commentaire_validation
+    demande.date_reponse = datetime.utcnow()
+    demande.updated_at = datetime.utcnow()
+    
+    await db.commit()
+    await db.refresh(demande)
+    
+    return await enrich_demande_with_user_info(db, demande)
+
+@router.get("/{demande_id}/attestation")
+async def generer_attestation(
+    demande_id: uuid.UUID,
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """Génère une attestation de congé (DRH uniquement)"""
+    if current_user.role != RoleEnum.DRH:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Seul le DRH peut générer les attestations"
+        )
+    
+    result = await db.execute(
+        select(DemandeConge).where(DemandeConge.id == demande_id)
+    )
+    demande = result.scalar_one_or_none()
+    
+    if not demande:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Demande de congé non trouvée"
+        )
+    
+    if demande.statut != StatutDemandeEnum.APPROUVEE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Seules les demandes approuvées peuvent générer une attestation"
+        )
+    
+    # Récupérer les informations de l'employé
+    enriched_demande = await enrich_demande_with_user_info(db, demande)
+    
+    # Générer le contenu de l'attestation
+    attestation_html = await generate_attestation_html(enriched_demande)
+    
+    return {
+        "content": attestation_html,
+        "filename": f"attestation_conge_{enriched_demande.user.nom}_{enriched_demande.user.prenom}_{demande.date_debut.strftime('%Y%m%d')}.html"
+    }
+
+async def generate_attestation_html(demande: DemandeCongeRead) -> str:
+    """Génère le contenu HTML de l'attestation de congé"""
+    from datetime import datetime
+    
+    template = f"""
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Attestation de Congé</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                line-height: 1.6;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f5f5f5;
+            }}
+            .attestation {{
+                background-color: white;
+                padding: 40px;
+                border-radius: 10px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }}
+            .header {{
+                text-align: center;
+                margin-bottom: 40px;
+                border-bottom: 2px solid #3B82F6;
+                padding-bottom: 20px;
+            }}
+            .company-name {{
+                font-size: 24px;
+                font-weight: bold;
+                color: #1F2937;
+                margin-bottom: 10px;
+            }}
+            .title {{
+                font-size: 20px;
+                font-weight: bold;
+                color: #3B82F6;
+                margin: 30px 0;
+                text-align: center;
+            }}
+            .content {{
+                font-size: 16px;
+                color: #374151;
+                margin-bottom: 20px;
+            }}
+            .employee-info {{
+                background-color: #F3F4F6;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+            }}
+            .info-row {{
+                display: flex;
+                margin-bottom: 10px;
+            }}
+            .info-label {{
+                font-weight: bold;
+                min-width: 200px;
+            }}
+            .signature-section {{
+                display: flex;
+                justify-content: space-between;
+                margin-top: 60px;
+            }}
+            .signature-box {{
+                text-align: center;
+                width: 200px;
+            }}
+            .signature-line {{
+                border-bottom: 1px solid #000;
+                margin: 40px 0 10px 0;
+            }}
+            .date-section {{
+                text-align: right;
+                margin-top: 40px;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="attestation">
+            <div class="header">
+                <div class="company-name">ENTREPRISE XYZ</div>
+                <div>Direction des Ressources Humaines</div>
+            </div>
+            
+            <div class="title">ATTESTATION DE CONGÉ</div>
+            
+            <div class="content">
+                <p>Je soussigné(e), Directeur(rice) des Ressources Humaines de l'entreprise XYZ, atteste par la présente que :</p>
+                
+                <div class="employee-info">
+                    <div class="info-row">
+                        <div class="info-label">Nom et Prénom :</div>
+                        <div>{demande.user.nom} {demande.user.prenom}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Email :</div>
+                        <div>{demande.user.email}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Département :</div>
+                        <div>{demande.user.departement or 'Non spécifié'}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Poste :</div>
+                        <div>{demande.user.role or 'Non spécifié'}</div>
+                    </div>
+                </div>
+                
+                <p>A bénéficié d'un congé payé dans les conditions suivantes :</p>
+                
+                <div class="employee-info">
+                    <div class="info-row">
+                        <div class="info-label">Type de congé :</div>
+                        <div>Congés payés</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Période :</div>
+                        <div>Du {demande.date_debut.strftime('%d/%m/%Y')} au {demande.date_fin.strftime('%d/%m/%Y')}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Durée :</div>
+                        <div>{demande.nombre_jours}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Motif :</div>
+                        <div>{demande.motif or 'Congés annuels'}</div>
+                    </div>
+                </div>
+                
+                <p>Cette attestation est délivrée à l'intéressé(e) pour servir et valoir ce que de droit.</p>
+            </div>
+            
+            <div class="date-section">
+                Fait à Abidjan, le {datetime.now().strftime('%d/%m/%Y')}
+            </div>
+            
+            <div class="signature-section">
+                <div class="signature-box">
+                    <div>L'employé(e)</div>
+                    <div class="signature-line"></div>
+                    <div>{demande.user.nom} {demande.user.prenom}</div>
+                </div>
+                <div class="signature-box">
+                    <div>Le DRH</div>
+                    <div class="signature-line"></div>
+                    <div>Signature et cachet</div>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return template 

@@ -1,6 +1,6 @@
 import holidays
 from datetime import date, timedelta
-from typing import Set
+from typing import Set, Tuple
 
 
 def get_cote_ivoire_holidays(year: int) -> Set[date]:
@@ -96,6 +96,20 @@ def calculate_total_days(start_date: date, end_date: date) -> int:
     if start_date > end_date:
         return 0
     return (end_date - start_date).days + 1
+
+
+def calculate_days_details(start_date: date, end_date: date) -> Tuple[int, int, str]:
+    """
+    Calcule les détails des jours pour une période donnée
+    
+    Returns:
+        Tuple[int, int, str]: (working_days, total_days, formatted_string)
+    """
+    working_days = calculate_working_days(start_date, end_date)
+    total_days = calculate_total_days(start_date, end_date)
+    formatted_string = format_nombre_jours(working_days, total_days)
+    
+    return working_days, total_days, formatted_string
 
 
 def format_nombre_jours(working_days: int, total_days: int) -> str:

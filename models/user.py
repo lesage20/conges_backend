@@ -34,7 +34,7 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     
     # Relations
     departement = relationship("Departement", back_populates="employes", foreign_keys=[departement_id])
-    demandes_conges = relationship("DemandeConge", back_populates="demandeur", foreign_keys="[DemandeConge.demandeur_id]")
+    demandes_conges = relationship("DemandeConge", foreign_keys="[DemandeConge.demandeur_id]")
     
     @property
     def nom_complet(self):
