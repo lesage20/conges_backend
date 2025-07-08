@@ -1764,6 +1764,58 @@ async def get_calendrier_conges(
         "conges": enriched_demandes
     }
 
+@router.get("/user/{user_id}", response_model=List[DemandeCongeRead])
+async def get_demandes_by_user(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(get_current_user)
+):
+    """Récupère les demandes d'un utilisateur spécifique avec contrôles de sécurité"""
+    
+    # Vérifier si l'utilisateur connecté peut voir les demandes de cet utilisateur
+    can_view = False
+    
+    # 1. L'utilisateur peut voir ses propres demandes
+    if current_user.id == user_id:
+        can_view = True
+    
+    # 2. Les DRH peuvent voir toutes les demandes
+    elif current_user.role == RoleEnum.DRH:
+        can_view = True
+    
+    # 3. Les chefs de service peuvent voir les demandes de leur département
+    elif current_user.role == RoleEnum.CHEF_SERVICE:
+        # Vérifier si l'utilisateur cible est dans le même département
+        result = await db.execute(
+            select(User).where(User.id == user_id)
+        )
+        target_user = result.scalar_one_or_none()
+        
+        if target_user and target_user.departement_id == current_user.departement_id:
+            can_view = True
+    
+    if not can_view:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vous n'avez pas l'autorisation de voir les demandes de cet utilisateur"
+        )
+    
+    # Récupérer les demandes de l'utilisateur
+    result = await db.execute(
+        select(DemandeConge)
+        .where(DemandeConge.demandeur_id == user_id)
+        .order_by(DemandeConge.date_demande.desc())
+    )
+    demandes = result.scalars().all()
+    
+    # Enrichir avec les informations utilisateur
+    enriched_demandes = []
+    for demande in demandes:
+        enriched = await enrich_demande_with_user_info(db, demande)
+        enriched_demandes.append(enriched)
+    
+    return enriched_demandes
+
 
 
 
