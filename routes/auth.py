@@ -16,6 +16,10 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     user: UserRead
 
+# Modèle pour la réponse de logout
+class LogoutResponse(BaseModel):
+    message: str
+
 # Modèle pour changer le mot de passe
 class ChangePasswordRequest(BaseModel):
     current_password: str
@@ -116,6 +120,18 @@ async def login(
             detail="Erreur d'authentification",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+# Route de déconnexion
+@router.post("/auth/logout", response_model=LogoutResponse, tags=["auth"])
+async def logout(
+    current_user: User = Depends(fastapi_users.current_user(active=True))
+):
+    """
+    Route de déconnexion côté serveur
+    """
+    # Pour l'instant, on se contente de confirmer la déconnexion
+    # Dans une implémentation plus avancée, on pourrait invalider le token
+    return LogoutResponse(message="Déconnexion réussie")
 
 # Route pour récupérer les infos de l'utilisateur connecté
 @router.get("/users/me", response_model=UserRead, tags=["users"])

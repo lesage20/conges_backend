@@ -555,10 +555,10 @@ async def valider_demande_conge(
             )
     
     elif current_user.role == RoleEnum.DRH:
-        # DRH peut valider :
-        # 1. Demandes des chefs de service
-        # 2. Demandes des employés RH
-        # 3. Demandes des employés de son département (si il en a un)
+        # DRH peut valider selon le workflow :
+        # 1. Demandes des chefs de service (directement)
+        # 2. Seulement REFUSER les demandes des employés de son département
+        # 3. Les demandes d'employés d'autres départements doivent d'abord être approuvées par leur chef de service
         demandeur_result = await db.execute(
             select(User).where(User.id == demande.demandeur_id)
         )
@@ -571,26 +571,33 @@ async def valider_demande_conge(
             )
         
         can_validate = False
+        can_only_refuse = False
         
         # 1. Peut valider les demandes des chefs de service
         if demandeur.role == RoleEnum.CHEF_SERVICE:
             can_validate = True
         
-        # 2. Peut valider les demandes des employés RH (département contenant "RH", "ressources humaines", etc.)
-        elif demandeur.role == RoleEnum.EMPLOYE and demandeur.departement_id:
-            # Récupérer le département du demandeur
-            dept_result = await db.execute(
-                select(Departement).where(Departement.id == demandeur.departement_id)
-            )
-            dept_demandeur = dept_result.scalar_one_or_none()
-            
-            if dept_demandeur and any(keyword in dept_demandeur.nom.lower() for keyword in 
-                                    ["ressources humaines", "rh", "drh", "direction des ressources humaines"]):
-                can_validate = True
-        
-        # 3. Peut valider les demandes des employés de son département (si le DRH a un département)
-        if not can_validate and current_user.departement_id and demandeur.departement_id == current_user.departement_id and demandeur.role == RoleEnum.EMPLOYE:
+        # 2. Pour les employés de son département : peut seulement refuser
+        elif (demandeur.role == RoleEnum.EMPLOYE and 
+              current_user.departement_id and 
+              demandeur.departement_id == current_user.departement_id):
             can_validate = True
+            can_only_refuse = True
+        
+        # 3. Pour les employés d'autres départements : workflow à deux niveaux non implémenté
+        # (les demandes doivent d'abord passer par le chef de service)
+        elif demandeur.role == RoleEnum.EMPLOYE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Les demandes d'employés doivent d'abord être traitées par leur chef de service"
+            )
+        
+        # Vérifier si on peut seulement refuser
+        if can_only_refuse and validation_data.statut == StatutDemandeEnum.APPROUVEE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Vous ne pouvez qu'refuser les demandes des employés de votre département. Les approbations doivent passer par le chef de service."
+            )
         
         if not can_validate:
             raise HTTPException(
@@ -1290,7 +1297,7 @@ async def get_dashboard_stats(
         "total_demandes": sum(stats.values())
     }
 
-async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> list[ActionDynamique]:
+async def get_actions_for_demande(demande: DemandeConge, current_user: User, db: AsyncSession = None) -> list[ActionDynamique]:
     """Détermine les actions disponibles pour une demande selon le rôle de l'utilisateur"""
     actions = []
     
@@ -1342,22 +1349,29 @@ async def get_actions_for_demande(demande: DemandeConge, current_user: User) -> 
                     ActionDynamique(action="generer_attestation", label="Générer attestation", icon="document", color="blue")
                 )
         else:  # Demandes des autres
-            if demande.statut == StatutDemandeEnum.EN_ATTENTE:
-                # Le DRH peut valider les demandes des chefs de service et des employés RH
-                # Plus celles de son équipe si il a un département assigné
-                can_validate = False
+            if demande.statut == StatutDemandeEnum.EN_ATTENTE and db:
+                # Récupérer les informations du demandeur pour appliquer la bonne logique
+                demandeur_result = await db.execute(
+                    select(User).where(User.id == demande.demandeur_id)
+                )
+                demandeur = demandeur_result.scalar_one_or_none()
                 
-                # Récupérer le demandeur pour vérifier son rôle et département
-                # Note: On devrait passer ces infos en paramètre pour éviter les requêtes DB ici
-                # Mais pour simplifier, on assume que le DRH peut valider selon sa logique métier
-                # Cette logique sera vérifiée dans l'endpoint de validation
-                can_validate = True  # Le DRH peut potentiellement valider toutes les demandes en attente
-                
-                if can_validate:
-                    actions.extend([
-                        ActionDynamique(action="approuver", label="Approuver", icon="check", color="green"),
-                        ActionDynamique(action="refuser", label="Refuser", icon="x", color="red")
-                    ])
+                if demandeur:
+                    # 1. Demandes des chefs de service : peut approuver et refuser
+                    if demandeur.role == RoleEnum.CHEF_SERVICE:
+                        actions.extend([
+                            ActionDynamique(action="approuver", label="Approuver", icon="check", color="green"),
+                            ActionDynamique(action="refuser", label="Refuser", icon="x", color="red")
+                        ])
+                    # 2. Employés de son département : peut seulement refuser
+                    elif (demandeur.role == RoleEnum.EMPLOYE and 
+                          current_user.departement_id and 
+                          demandeur.departement_id == current_user.departement_id):
+                        actions.append(
+                            ActionDynamique(action="refuser", label="Refuser", icon="x", color="red")
+                        )
+                    # 3. Employés d'autres départements : aucune action (doivent passer par leur chef de service)
+                    # Pas d'actions ajoutées
             elif demande.statut == StatutDemandeEnum.APPROUVEE:
                 actions.append(
                     ActionDynamique(action="generer_attestation", label="Générer attestation", icon="document", color="blue")
@@ -1381,7 +1395,7 @@ async def enrich_demande_with_actions(db: AsyncSession, demande: DemandeConge, c
     enriched_demande = await enrich_demande_with_user_info(db, demande)
     
     # Calculer les actions disponibles
-    actions = await get_actions_for_demande(demande, current_user)
+    actions = await get_actions_for_demande(demande, current_user, db)
     
     # Créer l'objet enrichi avec actions
     demande_with_actions = DemandeCongeWithActions(
