@@ -197,8 +197,8 @@ async def change_password(
         new_hashed_password = user_manager.password_helper.hash(request.new_password)
         
         # Mettre à jour le mot de passe dans la base de données
-        current_user.hashed_password = new_hashed_password
-        await user_manager.user_db.update(current_user)
+        update_dict = {"hashed_password": new_hashed_password}
+        await user_manager.user_db.update(current_user, update_dict)
         
         return ChangePasswordResponse(message="Mot de passe modifié avec succès")
         
