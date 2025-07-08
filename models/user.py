@@ -86,7 +86,7 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         date_10_janvier_precedent = date(annee_courante, 1, 10)
         
         # Vérifier si l'employé a au moins 24 mois d'ancienneté
-        anciennete_mois = (date_10_janvier_precedent - date_embauche).days / 30
+        anciennete_mois = (date_10_janvier_precedent - date_embauche).days // 30
         if anciennete_mois >= 24:
             # Plus de 24 mois : 12 * 2.2 = 26.4 jours
             jours_conges = math.ceil(12 * 2.2)
@@ -98,7 +98,7 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         else:
             jours_conges = 0
         
-        anciennete_ans = (date_10_janvier_precedent - date_embauche).days / 365
+        anciennete_ans = (date_10_janvier_precedent - date_embauche).days // 365
         if anciennete_ans >= 30:
             jours_conges += 8
         elif anciennete_ans >= 25:
@@ -113,11 +113,11 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
             jours_conges += 1
 
         if self.genre and self.genre.lower() == "femme" and self.date_naissance:
-            age = (date_10_janvier_precedent - self.date_naissance).days / 365
+            age = (date_10_janvier_precedent - self.date_naissance).days // 365
             if age < 21:
                 jours_conges += 2 * self.nombre_enfants
             else:
-                jours_conges += 1 * self.nombre_enfants if self.nombre_enfants >= 4 else 0
+                jours_conges += 2 * (self.nombre_enfants - 3) if self.nombre_enfants >= 4 else 0
         
         if self.has_medaille_honneur:
             jours_conges += 1
