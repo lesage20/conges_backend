@@ -6,7 +6,7 @@ import math
 
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID
 from fastapi_users import schemas
-from sqlalchemy import Column, String, Boolean, DateTime, Date, Enum as SQLEnum, ForeignKey
+from sqlalchemy import Column, String, Boolean, DateTime, Date, Integer, Enum as SQLEnum, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -16,6 +16,10 @@ class RoleEnum(str, Enum):
     EMPLOYE = "employe"
     CHEF_SERVICE = "chef_service"
     DRH = "drh"
+
+class GenreEnum(str, Enum):
+    HOMME = "homme"
+    FEMME = "femme"
 
 class User(SQLAlchemyBaseUserTableUUID, Base):
     __tablename__ = "users"
@@ -31,6 +35,12 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     role = Column(SQLEnum(RoleEnum), default=RoleEnum.EMPLOYE)
     date_embauche = Column(Date, default=date.today)  # Date seulement, pas datetime
     departement_id = Column(UUID(as_uuid=True), ForeignKey("departements.id"), nullable=True)
+    
+    # Nouveaux champs ajoutés
+    date_naissance = Column(Date, nullable=True)
+    nombre_enfants = Column(Integer, default=0)
+    has_medaille_honneur = Column(Boolean, default=False)
+    genre = Column(SQLEnum(GenreEnum), nullable=True)
     
     # Relations
     departement = relationship("Departement", back_populates="employes", foreign_keys=[departement_id])
@@ -48,30 +58,51 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         
         aujourd_hui = date.today()
         date_embauche = self.date_embauche
-        
-        # Calculer la date du 10 janvier de l'année précédente
+        jours_conges = 0
+        # Calculer la date du 10 janvier de l'année courante
         annee_courante = aujourd_hui.year
-        date_10_janvier_precedent = date(annee_courante - 1, 1, 10)
+        date_10_janvier_precedent = date(annee_courante, 1, 10)
         
         # Vérifier si l'employé a au moins 24 mois d'ancienneté
-        anciennete_mois = (aujourd_hui.year - date_embauche.year) * 12 + (aujourd_hui.month - date_embauche.month)
+        anciennete_mois = (date_10_janvier_precedent - date_embauche).days / 30
         if anciennete_mois >= 24:
             # Plus de 24 mois : 12 * 2.2 = 26.4 jours
-            return math.ceil(12 * 2.2)
+            jours_conges = math.ceil(12 * 2.2)
         
         # Vérifier si l'employé a 1 an ou plus au 10 janvier précédent
-        if date_embauche <= date_10_janvier_precedent:
+        elif  12 <= anciennete_mois < 24:
             # 1 an ou plus au 10 janvier : 12 * 2.2 = 26.4 jours
-            return math.ceil(12 * 2.2)
+            jours_conges = math.ceil(anciennete_mois * 2.2)
+        else:
+            jours_conges = 0
         
-        # Moins d'un an au 10 janvier précédent : calcul prorata
-        # Nombre de jours depuis l'embauche
-        jours_travailles = (aujourd_hui - date_embauche).days
-        # Convertir en mois approximatifs et multiplier par 2.2
-        mois_travailles = jours_travailles / 30.0  # Approximation
-        conges_calcules = mois_travailles * 2.2
+        anciennete_ans = (date_10_janvier_precedent - date_embauche).days / 365
+        if anciennete_ans >= 30:
+            jours_conges += 8
+        elif anciennete_ans >= 25:
+            jours_conges += 7
+        elif anciennete_ans >= 20:
+            jours_conges += 5
+        elif anciennete_ans >= 15:
+            jours_conges += 3
+        elif anciennete_ans >= 10:
+            jours_conges += 2
+        elif anciennete_ans >= 5:
+            jours_conges += 1
+
+        if self.genre and self.genre.lower() == "femme" and self.date_naissance:
+            age = (date_10_janvier_precedent - self.date_naissance).days / 365
+            if age < 21:
+                jours_conges += 2 * self.nombre_enfants
+            else:
+                jours_conges += 1 * self.nombre_enfants if self.nombre_enfants >= 4 else 0
         
-        return math.ceil(conges_calcules)
+        if self.has_medaille_honneur:
+            jours_conges += 1
+        
+        
+        return jours_conges
+
     
     @property
     def manager(self):
@@ -95,6 +126,10 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
     solde_conges: int  # Calculé automatiquement
     departement_id: Optional[uuid.UUID] = None
     nom_complet: str
+    date_naissance: Optional[date] = None
+    nombre_enfants: int = 0
+    has_medaille_honneur: bool = False
+    genre: Optional[GenreEnum] = None
 
 class UserCreate(schemas.BaseUserCreate):
     nom: str
@@ -105,6 +140,10 @@ class UserCreate(schemas.BaseUserCreate):
     role: RoleEnum = RoleEnum.EMPLOYE
     date_embauche: date  # Date seulement
     departement_id: Optional[uuid.UUID] = None
+    date_naissance: Optional[date] = None
+    nombre_enfants: int = 0
+    has_medaille_honneur: bool = False
+    genre: Optional[GenreEnum] = None
 
 class UserUpdate(schemas.BaseUserUpdate):
     nom: Optional[str] = None
@@ -114,4 +153,8 @@ class UserUpdate(schemas.BaseUserUpdate):
     poste: Optional[str] = None
     role: Optional[RoleEnum] = None
     date_embauche: Optional[date] = None  # Date seulement
-    departement_id: Optional[uuid.UUID] = None 
+    departement_id: Optional[uuid.UUID] = None
+    date_naissance: Optional[date] = None
+    nombre_enfants: Optional[int] = None
+    has_medaille_honneur: Optional[bool] = None
+    genre: Optional[GenreEnum] = None 

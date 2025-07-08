@@ -16,6 +16,15 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     user: UserRead
 
+# Modèle pour changer le mot de passe
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+# Modèle pour la réponse de changement de mot de passe
+class ChangePasswordResponse(BaseModel):
+    message: str
+
 # Route de login personnalisée
 @router.post("/auth/login", response_model=LoginResponse, tags=["auth"])
 async def login(
@@ -112,6 +121,53 @@ async def get_current_user_info(
         is_superuser=current_user.is_superuser,
         is_verified=current_user.is_verified
     )
+
+# Route pour changer le mot de passe
+@router.post("/users/change-password", response_model=ChangePasswordResponse, tags=["users"])
+async def change_password(
+    request: ChangePasswordRequest,
+    current_user: User = Depends(fastapi_users.current_user(active=True)),
+    user_manager=Depends(get_user_manager)
+):
+    """
+    Change le mot de passe de l'utilisateur connecté
+    """
+    try:
+        # Vérifier le mot de passe actuel
+        is_valid = user_manager.password_helper.verify_and_update(
+            request.current_password, current_user.hashed_password
+        )[0]
+        
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Mot de passe actuel incorrect"
+            )
+        
+        # Valider le nouveau mot de passe (au moins 6 caractères)
+        if len(request.new_password) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Le nouveau mot de passe doit contenir au moins 6 caractères"
+            )
+        
+        # Hasher le nouveau mot de passe
+        new_hashed_password = user_manager.password_helper.hash(request.new_password)
+        
+        # Mettre à jour le mot de passe dans la base de données
+        current_user.hashed_password = new_hashed_password
+        await user_manager.user_db.update(current_user)
+        
+        return ChangePasswordResponse(message="Mot de passe modifié avec succès")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erreur lors du changement de mot de passe: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erreur lors du changement de mot de passe"
+        )
 
 # Routes d'authentification par défaut (pour compatibilité)
 router.include_router(

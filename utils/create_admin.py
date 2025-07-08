@@ -9,7 +9,7 @@ backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
 from models.database import async_session_maker, Base, engine
-from models.user import User, RoleEnum
+from models.user import User, RoleEnum, GenreEnum
 from models.departement import Departement
 from fastapi_users.password import PasswordHelper
 
@@ -58,6 +58,10 @@ async def create_admin_user():
             role=RoleEnum.DRH,
             date_embauche=date(2018, 9, 1),  # Plus de 5 ans d'ancienneté
             departement_id=departement_drh.id,
+            date_naissance=date(1978, 3, 15),
+            nombre_enfants=2,
+            has_medaille_honneur=True,
+            genre=GenreEnum.FEMME,
             is_active=True,
             is_superuser=True,
             is_verified=True
@@ -130,7 +134,11 @@ async def create_sample_data():
                 "poste": "Chef d'équipe Développement",
                 "role": RoleEnum.CHEF_SERVICE,
                 "date_embauche": date(2021, 2, 15),  # Plus de 24 mois -> 27 jours
-                "departement": "Développement"
+                "departement": "Développement",
+                "date_naissance": date(1985, 7, 12),
+                "nombre_enfants": 1,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.HOMME
             },
             {
                 "email": "marie.dupont@entreprise.com", 
@@ -142,7 +150,11 @@ async def create_sample_data():
                 "poste": "Développeuse Full Stack Senior",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2024, 6, 1),  # Récent -> calcul prorata (~15 jours)
-                "departement": "Développement"
+                "departement": "Développement",
+                "date_naissance": date(1992, 11, 8),
+                "nombre_enfants": 0,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.FEMME
             },
             {
                 "email": "antoine.moreau@entreprise.com",
@@ -154,7 +166,11 @@ async def create_sample_data():
                 "poste": "Développeur Backend",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2023, 10, 1),  # 1 an au 10 janvier -> 27 jours
-                "departement": "Développement"
+                "departement": "Développement",
+                "date_naissance": date(1988, 4, 22),
+                "nombre_enfants": 2,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.HOMME
             },
             {
                 "email": "camille.roux@entreprise.com",
@@ -166,7 +182,11 @@ async def create_sample_data():
                 "poste": "Développeuse Frontend",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2022, 5, 20),  # Plus de 24 mois -> 27 jours
-                "departement": "Développement"
+                "departement": "Développement",
+                "date_naissance": date(1990, 9, 3),
+                "nombre_enfants": 1,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.FEMME
             },
             {
                 "email": "lucas.martin@entreprise.com",
@@ -178,7 +198,11 @@ async def create_sample_data():
                 "poste": "Développeur DevOps",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2024, 1, 15),  # Moins d'1 an au 10 janvier -> prorata (~13 jours)
-                "departement": "Développement"
+                "departement": "Développement",
+                "date_naissance": date(1995, 1, 18),
+                "nombre_enfants": 0,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.HOMME
             },
             
             # === DÉPARTEMENT MARKETING ===
@@ -192,7 +216,11 @@ async def create_sample_data():
                 "poste": "Responsable Marketing",
                 "role": RoleEnum.CHEF_SERVICE,
                 "date_embauche": date(2020, 11, 10),  # Plus de 24 mois -> 27 jours
-                "departement": "Marketing"
+                "departement": "Marketing",
+                "date_naissance": date(1982, 6, 25),
+                "nombre_enfants": 3,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.FEMME
             },
             {
                 "email": "julien.garcia@entreprise.com",
@@ -204,7 +232,11 @@ async def create_sample_data():
                 "poste": "Responsable Communication",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2023, 3, 1),  # 1 an au 10 janvier -> 27 jours
-                "departement": "Marketing"
+                "departement": "Marketing",
+                "date_naissance": date(1987, 12, 14),
+                "nombre_enfants": 1,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.HOMME
             },
             {
                 "email": "emma.leroy@entreprise.com",
@@ -216,7 +248,11 @@ async def create_sample_data():
                 "poste": "Chargée de Marketing Digital",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2024, 9, 2),  # Très récent -> prorata (~7 jours)
-                "departement": "Marketing"
+                "departement": "Marketing",
+                "date_naissance": date(1993, 2, 7),
+                "nombre_enfants": 0,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.FEMME
             },
             {
                 "email": "pierre.simon@entreprise.com",
@@ -228,7 +264,11 @@ async def create_sample_data():
                 "poste": "Graphiste",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2022, 1, 10),  # Plus de 24 mois -> 27 jours
-                "departement": "Marketing"
+                "departement": "Marketing",
+                "date_naissance": date(1989, 8, 30),
+                "nombre_enfants": 2,
+                "has_medaille_honneur": True,
+                "genre": GenreEnum.HOMME
             },
             
             # === DÉPARTEMENT VENTES ===
@@ -242,7 +282,11 @@ async def create_sample_data():
                 "poste": "Directeur Commercial",
                 "role": RoleEnum.CHEF_SERVICE,
                 "date_embauche": date(2019, 6, 1),  # Plus de 24 mois -> 27 jours
-                "departement": "Ventes"
+                "departement": "Ventes",
+                "date_naissance": date(1980, 10, 5),
+                "nombre_enfants": 2,
+                "has_medaille_honneur": True,
+                "genre": GenreEnum.HOMME
             },
             {
                 "email": "sarah.blanc@entreprise.com",
@@ -254,7 +298,11 @@ async def create_sample_data():
                 "poste": "Commerciale Senior",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2021, 8, 15),  # Plus de 24 mois -> 27 jours
-                "departement": "Ventes"
+                "departement": "Ventes",
+                "date_naissance": date(1986, 5, 11),
+                "nombre_enfants": 4,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.FEMME
             },
             {
                 "email": "maxime.henry@entreprise.com",
@@ -266,7 +314,11 @@ async def create_sample_data():
                 "poste": "Commercial",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2024, 3, 1),  # Moins d'1 an au 10 janvier -> prorata (~11 jours)
-                "departement": "Ventes"
+                "departement": "Ventes",
+                "date_naissance": date(1991, 1, 28),
+                "nombre_enfants": 0,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.HOMME
             },
             {
                 "email": "celine.petit@entreprise.com",
@@ -278,7 +330,11 @@ async def create_sample_data():
                 "poste": "Assistante Commerciale",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2023, 7, 1),  # 1 an au 10 janvier -> 27 jours
-                "departement": "Ventes"
+                "departement": "Ventes",
+                "date_naissance": date(1994, 4, 16),
+                "nombre_enfants": 1,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.FEMME
             },
             {
                 "email": "david.moreau@entreprise.com",
@@ -290,7 +346,11 @@ async def create_sample_data():
                 "poste": "Commercial Junior",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2024, 11, 1),  # Très récent -> prorata (~2 jours)
-                "departement": "Ventes"
+                "departement": "Ventes",
+                "date_naissance": date(1996, 7, 20),
+                "nombre_enfants": 0,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.HOMME
             },
             
             # === DÉPARTEMENT RH (quelques employés) ===
@@ -304,7 +364,11 @@ async def create_sample_data():
                 "poste": "Gestionnaire RH",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2022, 9, 1),  # Plus de 24 mois -> 27 jours
-                "departement": "Direction des Ressources Humaines"
+                "departement": "Direction des Ressources Humaines",
+                "date_naissance": date(1984, 11, 12),
+                "nombre_enfants": 5,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.FEMME
             },
             {
                 "email": "kevin.martinez@entreprise.com",
@@ -316,7 +380,11 @@ async def create_sample_data():
                 "poste": "Assistant RH",
                 "role": RoleEnum.EMPLOYE,
                 "date_embauche": date(2024, 4, 15),  # Moins d'1 an au 10 janvier -> prorata (~9 jours)
-                "departement": "Direction des Ressources Humaines"
+                "departement": "Direction des Ressources Humaines",
+                "date_naissance": date(1997, 3, 9),
+                "nombre_enfants": 0,
+                "has_medaille_honneur": False,
+                "genre": GenreEnum.HOMME
             }
         ]
         
@@ -343,6 +411,10 @@ async def create_sample_data():
                     role=user_data["role"],
                     date_embauche=user_data["date_embauche"],
                     departement_id=dept.id if dept else None,
+                    date_naissance=user_data["date_naissance"],
+                    nombre_enfants=user_data["nombre_enfants"],
+                    has_medaille_honneur=user_data["has_medaille_honneur"],
+                    genre=user_data["genre"],
                     is_active=True,
                     is_verified=True
                 )
