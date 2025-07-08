@@ -8,10 +8,57 @@ from sqlalchemy.orm import selectinload
 
 from models.database import get_database
 from models.user import User, UserRead, UserUpdate, RoleEnum
+from models.demande_conge import DemandeConge
 from utils.auth import fastapi_users
 from utils.dependencies import get_current_user, require_drh, require_manager
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+async def enrich_user_with_solde_restant(db: AsyncSession, user: User) -> UserRead:
+    """Enrichit un utilisateur avec le calcul du solde de congés restant"""
+    
+    # Récupérer les demandes de l'utilisateur
+    demandes_result = await db.execute(
+        select(DemandeConge).where(DemandeConge.demandeur_id == user.id)
+    )
+    demandes = demandes_result.scalars().all()
+    
+    # Calculer le solde restant
+    solde_restant = user.calculate_solde_conges_restant(demandes)
+    
+    # Créer le UserRead avec le solde restant
+    user_data = UserRead(
+        id=user.id,
+        email=user.email,
+        is_active=user.is_active,
+        is_superuser=user.is_superuser,
+        is_verified=user.is_verified,
+        nom=user.nom,
+        prenom=user.prenom,
+        telephone=user.telephone,
+        numero_piece_identite=user.numero_piece_identite,
+        poste=user.poste,
+        role=user.role,
+        date_embauche=user.date_embauche,
+        solde_conges=user.solde_conges,
+        solde_conges_restant=solde_restant,
+        departement_id=user.departement_id,
+        nom_complet=user.nom_complet,
+        date_naissance=user.date_naissance,
+        nombre_enfants=user.nombre_enfants,
+        has_medaille_honneur=user.has_medaille_honneur,
+        genre=user.genre
+    )
+    
+    return user_data
+
+async def enrich_users_with_solde_restant(db: AsyncSession, users: List[User]) -> List[UserRead]:
+    """Enrichit une liste d'utilisateurs avec le calcul du solde de congés restant"""
+    enriched_users = []
+    for user in users:
+        enriched_user = await enrich_user_with_solde_restant(db, user)
+        enriched_users.append(enriched_user)
+    return enriched_users
 
 # Routes CRUD des utilisateurs (FastAPIUsers par défaut)
 # IMPORTANT: Inclure nos routes personnalisées AVANT FastAPIUsers pour éviter les conflits
@@ -19,10 +66,11 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 @router.get("/me", response_model=UserRead)
 async def get_current_user_profile(
+    db: AsyncSession = Depends(get_database),
     current_user: User = Depends(get_current_user)
 ):
     """Récupère le profil de l'utilisateur connecté"""
-    return current_user
+    return await enrich_user_with_solde_restant(db, current_user)
 
 @router.get("/departement/{departement_id}", response_model=List[UserRead])
 async def get_users_by_departement(
@@ -37,7 +85,7 @@ async def get_users_by_departement(
         .options(selectinload(User.departement))
     )
     users = result.scalars().all()
-    return users
+    return await enrich_users_with_solde_restant(db, users)
 
 @router.get("", response_model=List[UserRead])
 async def get_all_users(
@@ -83,7 +131,7 @@ async def get_all_users(
         )
     
     users = result.scalars().all()
-    return users
+    return await enrich_users_with_solde_restant(db, users)
 
 @router.get("/equipe", response_model=List[UserRead])
 async def get_my_team(
@@ -119,7 +167,7 @@ async def get_my_team(
     )
     
     users = result.scalars().all()
-    return users
+    return await enrich_users_with_solde_restant(db, users)
 
 @router.get("/managers", response_model=List[UserRead])
 async def get_managers(
@@ -133,7 +181,7 @@ async def get_managers(
         .options(selectinload(User.departement))
     )
     managers = result.scalars().all()
-    return managers
+    return await enrich_users_with_solde_restant(db, managers)
 
 @router.put("/{user_id}/role", response_model=UserRead)
 async def update_user_role(
@@ -155,7 +203,7 @@ async def update_user_role(
     user.role = new_role
     await db.commit()
     await db.refresh(user)
-    return user
+    return await enrich_user_with_solde_restant(db, user)
 
 @router.put("/{user_id}/departement", response_model=UserRead)
 async def assign_departement(
@@ -189,7 +237,7 @@ async def assign_departement(
     user.departement_id = departement_id
     await db.commit()
     await db.refresh(user)
-    return user 
+    return await enrich_user_with_solde_restant(db, user)
 
 # Routes CRUD des utilisateurs (FastAPIUsers par défaut) - À la fin pour éviter les conflits
 router.include_router(

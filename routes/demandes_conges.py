@@ -262,6 +262,22 @@ async def create_demande_conge(
         demande_data.date_fin
     )
     
+    # Vérifier si l'utilisateur a suffisamment de congés restants
+    # (seulement pour les congés payés, pas pour les autres types)
+    if demande_data.type_conge == TypeCongeEnum.CONGES_PAYES:
+        # Récupérer les demandes de l'utilisateur pour calculer le solde
+        demandes_result = await db.execute(
+            select(DemandeConge).where(DemandeConge.demandeur_id == current_user.id)
+        )
+        demandes_existantes = demandes_result.scalars().all()
+        
+        solde_restant = current_user.calculate_solde_conges_restant(demandes_existantes)
+        if working_days > solde_restant:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Solde de congés insuffisant. Vous avez {solde_restant} jour(s) restant(s) et vous demandez {working_days} jour(s) ouvrés."
+            )
+    
     # Trouver le valideur approprié selon la hiérarchie
     valideur_id = None
     statut_initial = StatutDemandeEnum.EN_ATTENTE  # Par défaut
@@ -405,6 +421,28 @@ async def update_demande_conge(
             new_date_debut, 
             new_date_fin
         )
+        
+        # Vérifier si l'utilisateur a suffisamment de congés restants pour la modification
+        # (seulement pour les congés payés, pas pour les autres types)
+        if demande.type_conge == TypeCongeEnum.CONGES_PAYES:
+            # Récupérer les demandes de l'utilisateur (excluant la demande en cours de modification)
+            demandes_result = await db.execute(
+                select(DemandeConge).where(
+                    and_(
+                        DemandeConge.demandeur_id == current_user.id,
+                        DemandeConge.id != demande.id
+                    )
+                )
+            )
+            demandes_autres = demandes_result.scalars().all()
+            
+            # Calculer le solde en excluant la demande actuelle
+            solde_avec_demande_actuelle = current_user.calculate_solde_conges_restant(demandes_autres)
+            if working_days > solde_avec_demande_actuelle:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Solde de congés insuffisant. Vous avez {solde_avec_demande_actuelle} jour(s) disponible(s) et vous demandez {working_days} jour(s) ouvrés."
+                )
         
         update_data['nombre_jours'] = formatted_string
         update_data['working_time'] = working_days
@@ -584,63 +622,53 @@ async def get_dashboard_stats(
     
     # KPI spécifiques aux employés
     if current_user.role == RoleEnum.EMPLOYE:
-        # Calculer les jours restants pour l'année en cours
+        # Récupérer toutes les demandes de l'utilisateur pour calculer le solde restant
+        demandes_user_result = await db.execute(
+            select(DemandeConge).where(DemandeConge.demandeur_id == current_user.id)
+        )
+        demandes_user = demandes_user_result.scalars().all()
+        
+        # Calculer le solde restant avec la méthode officielle
+        solde_restant = current_user.calculate_solde_conges_restant(demandes_user)
+        
+        # Calculer les statistiques pour l'année en cours
         annee_courante = date.today().year
         debut_annee = date(annee_courante, 1, 1)
         fin_annee = date(annee_courante, 12, 31)
         
         # Jours déjà pris (demandes approuvées cette année)
-        demandes_approuvees_annee = await db.execute(
-            select(DemandeConge).where(
-                and_(
-                    DemandeConge.demandeur_id == current_user.id,
-                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
-                    DemandeConge.date_debut >= debut_annee,
-                    DemandeConge.date_debut <= fin_annee
-                )
-            )
-        )
-        jours_pris = sum(demande.working_time or 0 for demande in demandes_approuvees_annee.scalars().all())
+        demandes_approuvees_annee = [d for d in demandes_user 
+                                   if d.statut == StatutDemandeEnum.APPROUVEE 
+                                   and d.date_debut >= debut_annee 
+                                   and d.date_debut <= fin_annee]
+        jours_pris = sum(demande.working_time or 0 for demande in demandes_approuvees_annee)
         
         # Jours en attente (demandes en attente cette année)
-        demandes_attente_annee = await db.execute(
-            select(DemandeConge).where(
-                and_(
-                    DemandeConge.demandeur_id == current_user.id,
-                    DemandeConge.statut == StatutDemandeEnum.EN_ATTENTE,
-                    DemandeConge.date_debut >= debut_annee,
-                    DemandeConge.date_debut <= fin_annee
-                )
-            )
-        )
-        jours_attente = sum(demande.working_time or 0 for demande in demandes_attente_annee.scalars().all())
+        demandes_attente_annee = [d for d in demandes_user 
+                                if d.statut == StatutDemandeEnum.EN_ATTENTE 
+                                and d.date_debut >= debut_annee 
+                                and d.date_debut <= fin_annee]
+        jours_attente = sum(demande.working_time or 0 for demande in demandes_attente_annee)
         
-        # Jours restants = solde total - jours pris - jours en attente
-        jours_restants = max(0, current_user.solde_conges - jours_pris - jours_attente)
+        # Jours restants (en utilisant le solde restant global, pas seulement pour l'année)
+        jours_restants = solde_restant
         
         # Vérifier si l'employé a un congé en cours
         aujourd_hui = date.today()
-        conge_en_cours = await db.execute(
-            select(DemandeConge).where(
-                and_(
-                    DemandeConge.demandeur_id == current_user.id,
-                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
-                    DemandeConge.date_debut <= aujourd_hui,
-                    DemandeConge.date_fin >= aujourd_hui
-                )
-            )
-        )
-        conge_actuel = conge_en_cours.scalar_one_or_none()
+        conge_actuel = None
+        for demande in demandes_user:
+            if (demande.statut == StatutDemandeEnum.APPROUVEE and 
+                demande.date_debut <= aujourd_hui and 
+                demande.date_fin >= aujourd_hui):
+                conge_actuel = demande
+                break
         
         # Activité récente (toutes les demandes de l'employé)
-        activite_recente = await db.execute(
-            select(DemandeConge).where(
-                DemandeConge.demandeur_id == current_user.id
-            ).order_by(DemandeConge.created_at.desc()).limit(5)
-        )
+        # Utiliser les demandes déjà récupérées et les trier
+        demandes_triees = sorted(demandes_user, key=lambda d: d.created_at, reverse=True)[:5]
         
         activite_list = []
-        for demande in activite_recente.scalars().all():
+        for demande in demandes_triees:
             activite_list.append({
                 "id": str(demande.id),
                 "message": f"Demande de congé {demande.statut.value}",
@@ -658,6 +686,7 @@ async def get_dashboard_stats(
             "demandes_en_attente": stats.get("en_attente", 0),
             "jours_restants": jours_restants,
             "solde_total": current_user.solde_conges,
+            "solde_conges_restant": solde_restant,
             "jours_pris": jours_pris,
             "jours_en_attente": jours_attente,
             "annee": annee_courante,

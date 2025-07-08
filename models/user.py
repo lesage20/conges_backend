@@ -103,6 +103,36 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         
         return jours_conges
 
+    @property
+    def solde_conges_restant(self):
+        """Calcule le solde de congés restant en soustrayant les jours pris des demandes approuvées"""
+        from .demande_conge import StatutDemandeEnum
+        
+        solde_total = self.solde_conges
+        
+        # Calculer les jours pris (demandes approuvées uniquement)
+        jours_pris = 0
+        for demande in self.demandes_conges:
+            if demande.statut == StatutDemandeEnum.APPROUVEE:
+                jours_pris += demande.working_time or 0
+        
+        return max(0, solde_total - jours_pris)  # Ne pas retourner une valeur négative
+
+    def calculate_solde_conges_restant(self, demandes_conges=None):
+        """Calcule le solde de congés restant avec une liste de demandes fournie"""
+        from .demande_conge import StatutDemandeEnum
+        
+        solde_total = self.solde_conges
+        
+        # Calculer les jours pris (demandes approuvées uniquement)
+        jours_pris = 0
+        if demandes_conges:
+            for demande in demandes_conges:
+                if demande.statut == StatutDemandeEnum.APPROUVEE:
+                    jours_pris += demande.working_time or 0
+        
+        return max(0, solde_total - jours_pris)  # Ne pas retourner une valeur négative
+
     
     @property
     def manager(self):
@@ -124,6 +154,7 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
     role: RoleEnum
     date_embauche: date  # Date seulement
     solde_conges: int  # Calculé automatiquement
+    solde_conges_restant: int  # Calculé automatiquement
     departement_id: Optional[uuid.UUID] = None
     nom_complet: str
     date_naissance: Optional[date] = None
