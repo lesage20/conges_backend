@@ -61,6 +61,22 @@ async def login(
         strategy = auth_backend.get_strategy()
         token = await strategy.write_token(user)
         
+        # Calculer le solde de congés restant de manière asynchrone
+        from models.demande_conge import DemandeConge
+        from models.database import get_database
+        from sqlalchemy import select
+        
+        # Récupérer les demandes de l'utilisateur de manière asynchrone
+        async for db in get_database():
+            demandes_result = await db.execute(
+                select(DemandeConge).where(DemandeConge.demandeur_id == user.id)
+            )
+            demandes = demandes_result.scalars().all()
+            break
+        
+        # Calculer le solde restant avec la méthode safe
+        solde_restant = user.calculate_solde_conges_restant(demandes)
+        
         # Créer la réponse utilisateur avec tous les champs calculés
         user_response = UserRead(
             id=user.id,
@@ -74,10 +90,15 @@ async def login(
             role=user.role,
             date_embauche=user.date_embauche,
             solde_conges=user.solde_conges,
+            solde_conges_restant=solde_restant,
             departement_id=user.departement_id,
             is_active=user.is_active,
             is_superuser=user.is_superuser,
-            is_verified=user.is_verified
+            is_verified=user.is_verified,
+            date_naissance=user.date_naissance,
+            nombre_enfants=user.nombre_enfants,
+            has_medaille_honneur=user.has_medaille_honneur,
+            genre=user.genre
         )
         
         # Retourner le token avec les informations utilisateur
@@ -104,6 +125,22 @@ async def get_current_user_info(
     """
     Récupère les informations de l'utilisateur actuellement connecté
     """
+    # Calculer le solde de congés restant de manière asynchrone
+    from models.demande_conge import DemandeConge
+    from models.database import get_database
+    from sqlalchemy import select
+    
+    # Récupérer les demandes de l'utilisateur de manière asynchrone
+    async for db in get_database():
+        demandes_result = await db.execute(
+            select(DemandeConge).where(DemandeConge.demandeur_id == current_user.id)
+        )
+        demandes = demandes_result.scalars().all()
+        break
+    
+    # Calculer le solde restant avec la méthode safe
+    solde_restant = current_user.calculate_solde_conges_restant(demandes)
+    
     return UserRead(
         id=current_user.id,
         email=current_user.email,
@@ -116,10 +153,15 @@ async def get_current_user_info(
         role=current_user.role,
         date_embauche=current_user.date_embauche,
         solde_conges=current_user.solde_conges,
+        solde_conges_restant=solde_restant,
         departement_id=current_user.departement_id,
         is_active=current_user.is_active,
         is_superuser=current_user.is_superuser,
-        is_verified=current_user.is_verified
+        is_verified=current_user.is_verified,
+        date_naissance=current_user.date_naissance,
+        nombre_enfants=current_user.nombre_enfants,
+        has_medaille_honneur=current_user.has_medaille_honneur,
+        genre=current_user.genre
     )
 
 # Route pour changer le mot de passe

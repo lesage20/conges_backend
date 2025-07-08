@@ -7,9 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from models.database import get_database
-from models.user import User, UserRead, UserUpdate, RoleEnum
+from models.user import User, UserRead, UserCreate, UserUpdate, RoleEnum, validate_anciennete_minimum
 from models.demande_conge import DemandeConge
-from utils.auth import fastapi_users
+from utils.auth import fastapi_users, get_user_manager
 from utils.dependencies import get_current_user, require_drh, require_manager
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -63,6 +63,43 @@ async def enrich_users_with_solde_restant(db: AsyncSession, users: List[User]) -
 # Routes CRUD des utilisateurs (FastAPIUsers par défaut)
 # IMPORTANT: Inclure nos routes personnalisées AVANT FastAPIUsers pour éviter les conflits
 # FastAPIUsers génère des routes comme /{user_id} qui peuvent masquer nos routes personnalisées
+
+@router.post("/create-employee", response_model=UserRead)
+async def create_employee(
+    user_data: UserCreate,
+    db: AsyncSession = Depends(get_database),
+    current_user: User = Depends(require_drh()),
+    user_manager = Depends(get_user_manager)
+):
+    """
+    Crée un nouvel employé avec validation d'ancienneté minimale (DRH uniquement)
+    
+    Vérifie que l'employé a au moins 1 an d'ancienneté au 10 janvier de l'année courante
+    """
+    # Validation d'ancienneté pour les nouveaux employés
+    if not validate_anciennete_minimum(user_data.date_embauche):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="L'employé doit avoir au moins 1 an d'ancienneté au 10 janvier de l'année courante"
+        )
+    
+    try:
+        # Créer l'utilisateur via le user_manager de FastAPIUsers
+        user = await user_manager.create(user_data, safe=True)
+        
+        # Retourner les données enrichies
+        return await enrich_user_with_solde_restant(db, user)
+        
+    except Exception as e:
+        if "duplicate key" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Un utilisateur avec cette adresse email ou ce numéro de pièce d'identité existe déjà"
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur lors de la création de l'employé: {str(e)}"
+        )
 
 @router.get("/me", response_model=UserRead)
 async def get_current_user_profile(

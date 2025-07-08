@@ -21,6 +21,28 @@ class GenreEnum(str, Enum):
     HOMME = "homme"
     FEMME = "femme"
 
+def validate_anciennete_minimum(date_embauche: date) -> bool:
+    """
+    Valide qu'un employé a au moins 1 an d'ancienneté au 10 janvier de l'année courante.
+    
+    Args:
+        date_embauche: Date d'embauche de l'employé
+        
+    Returns:
+        bool: True si l'employé a au moins 1 an d'ancienneté au 10 janvier, False sinon
+    """
+    if not date_embauche:
+        return False
+    
+    annee_courante = date.today().year
+    date_10_janvier_courante = date(annee_courante, 1, 10)
+    
+    # Calculer la différence en jours et convertir en années
+    anciennete_jours = (date_10_janvier_courante - date_embauche).days
+    anciennete_ans = anciennete_jours / 365
+    
+    return anciennete_ans >= 1
+
 class User(SQLAlchemyBaseUserTableUUID, Base):
     __tablename__ = "users"
     

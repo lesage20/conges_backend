@@ -188,33 +188,8 @@ async def can_create_new_demande(
 ):
     """Vérifie si l'utilisateur peut créer une nouvelle demande de congé"""
     
-    # Vérifier s'il y a une demande en cours (en_attente ou approuvée et non terminée)
-    query = select(DemandeConge).where(
-        and_(
-            DemandeConge.demandeur_id == current_user.id,
-            or_(
-                DemandeConge.statut == StatutDemandeEnum.EN_ATTENTE,
-                and_(
-                    DemandeConge.statut == StatutDemandeEnum.APPROUVEE,
-                    DemandeConge.date_fin >= date.today()  # Congé pas encore terminé
-                )
-            )
-        )
-    )
-    
-    result = await db.execute(query)
-    demande_en_cours = result.scalars().first()
-    
-    if demande_en_cours:
-        # Enrichir la demande avec les informations utilisateur
-        demande_enrichie = await enrich_demande_with_user_info(db, demande_en_cours)
-        
-        return {
-            "can_create": False,
-            "reason": "Vous avez déjà une demande en cours",
-            "existing_demande": demande_enrichie
-        }
-    
+    # Permettre toujours la création de nouvelles demandes
+    # (suppression de la condition qui empêchait la création si une demande était en cours)
     return {
         "can_create": True,
         "reason": None,
@@ -255,6 +230,41 @@ async def create_demande_conge(
     current_user: User = Depends(get_current_user)
 ):
     """Crée une nouvelle demande de congé"""
+    
+    # Vérifier les chevauchements avec les demandes existantes
+    chevauchement_query = select(DemandeConge).where(
+        and_(
+            DemandeConge.demandeur_id == current_user.id,
+            or_(
+                # Cas 1: La nouvelle demande commence pendant une période existante
+                and_(
+                    DemandeConge.date_debut <= demande_data.date_debut,
+                    DemandeConge.date_fin >= demande_data.date_debut
+                ),
+                # Cas 2: La nouvelle demande se termine pendant une période existante
+                and_(
+                    DemandeConge.date_debut <= demande_data.date_fin,
+                    DemandeConge.date_fin >= demande_data.date_fin
+                ),
+                # Cas 3: La nouvelle demande englobe une période existante
+                and_(
+                    DemandeConge.date_debut >= demande_data.date_debut,
+                    DemandeConge.date_fin <= demande_data.date_fin
+                )
+            ),
+            # Exclure les demandes refusées et annulées
+            DemandeConge.statut.in_([StatutDemandeEnum.EN_ATTENTE, StatutDemandeEnum.APPROUVEE])
+        )
+    )
+    
+    result = await db.execute(chevauchement_query)
+    demande_chevauchement = result.scalars().first()
+    
+    if demande_chevauchement:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Période de congés en conflit avec une demande existante du {demande_chevauchement.date_debut} au {demande_chevauchement.date_fin}"
+        )
     
     # Calculer automatiquement les jours avec les nouvelles fonctions
     working_days, total_days, formatted_string = calculate_days_details(
@@ -416,6 +426,42 @@ async def update_demande_conge(
     if 'date_debut' in update_data or 'date_fin' in update_data:
         new_date_debut = update_data.get('date_debut', demande.date_debut)
         new_date_fin = update_data.get('date_fin', demande.date_fin)
+        
+        # Vérifier les chevauchements avec les autres demandes (exclure la demande en cours de modification)
+        chevauchement_query = select(DemandeConge).where(
+            and_(
+                DemandeConge.demandeur_id == current_user.id,
+                DemandeConge.id != demande.id,  # Exclure la demande actuelle
+                or_(
+                    # Cas 1: La demande modifiée commence pendant une période existante
+                    and_(
+                        DemandeConge.date_debut <= new_date_debut,
+                        DemandeConge.date_fin >= new_date_debut
+                    ),
+                    # Cas 2: La demande modifiée se termine pendant une période existante
+                    and_(
+                        DemandeConge.date_debut <= new_date_fin,
+                        DemandeConge.date_fin >= new_date_fin
+                    ),
+                    # Cas 3: La demande modifiée englobe une période existante
+                    and_(
+                        DemandeConge.date_debut >= new_date_debut,
+                        DemandeConge.date_fin <= new_date_fin
+                    )
+                ),
+                # Exclure les demandes refusées et annulées
+                DemandeConge.statut.in_([StatutDemandeEnum.EN_ATTENTE, StatutDemandeEnum.APPROUVEE])
+            )
+        )
+        
+        result = await db.execute(chevauchement_query)
+        demande_chevauchement = result.scalars().first()
+        
+        if demande_chevauchement:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Période de congés en conflit avec une demande existante du {demande_chevauchement.date_debut} au {demande_chevauchement.date_fin}"
+            )
         
         working_days, total_days, formatted_string = calculate_days_details(
             new_date_debut, 
