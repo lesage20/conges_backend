@@ -12,6 +12,7 @@ sys.path.insert(0, str(current_dir))
 
 from models.database import Base, engine
 from routes import auth_router, users_router, departements_router, demandes_conges_router
+from routes.notifications import router as notifications_router
 from middlewares.logging_middleware import LoggingMiddleware
 from middlewares.error_handling import setup_error_handlers
 
@@ -56,6 +57,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(departements_router, prefix="/api")
 app.include_router(demandes_conges_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
 
 # Configuration des fichiers statiques pour les attestations
 app.mount("/attestations", StaticFiles(directory="attestations"), name="attestations")

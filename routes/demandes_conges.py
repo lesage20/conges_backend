@@ -17,6 +17,7 @@ from models.user import User, RoleEnum
 from models.departement import Departement
 from utils.dependencies import get_current_user, require_manager
 from utils.date_calculator import calculate_days_details
+from services.notification_service import NotificationService
 
 router = APIRouter(prefix="/demandes-conges", tags=["demandes-conges"])
 
@@ -386,6 +387,15 @@ async def create_demande_conge(
     await db.commit()
     await db.refresh(demande)
     
+    # Envoyer les notifications pour nouvelle demande (seulement si EN_ATTENTE)
+    if statut_initial == StatutDemandeEnum.EN_ATTENTE:
+        try:
+            notification_service = NotificationService(db)
+            await notification_service.notifier_nouvelle_demande(demande)
+        except Exception as e:
+            # Ne pas faire échouer la création de demande si les notifications échouent
+            print(f"Erreur lors de l'envoi des notifications: {e}")
+    
     return await enrich_demande_with_user_info(db, demande)
 
 @router.put("/{demande_id}", response_model=DemandeCongeRead)
@@ -596,15 +606,28 @@ async def valider_demande_conge(
     await db.commit()
     await db.refresh(demande)
     
+    # Envoyer les notifications de validation
+    try:
+        notification_service = NotificationService(db)
+        approuvee = validation_data.statut == StatutDemandeEnum.APPROUVEE
+        await notification_service.notifier_validation_demande(
+            demande, 
+            approuvee, 
+            validation_data.commentaire_validation
+        )
+    except Exception as e:
+        # Ne pas faire échouer la validation si les notifications échouent
+        print(f"Erreur lors de l'envoi des notifications: {e}")
+    
     return await enrich_demande_with_user_info(db, demande)
 
 @router.delete("/{demande_id}")
-async def cancel_demande_conge(
+async def delete_demande_conge(
     demande_id: uuid.UUID,
     db: AsyncSession = Depends(get_database),
     current_user: User = Depends(get_current_user)
 ):
-    """Annule une demande de congé"""
+    """Supprime définitivement une demande de congé"""
     result = await db.execute(
         select(DemandeConge).where(DemandeConge.id == demande_id)
     )
@@ -616,21 +639,38 @@ async def cancel_demande_conge(
             detail="Demande de congé non trouvée"
         )
     
-    if demande.demandeur_id != current_user.id:
+    # Vérifier les permissions
+    if current_user.role == RoleEnum.EMPLOYE and demande.demandeur_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Vous ne pouvez annuler que vos propres demandes"
+            detail="Vous ne pouvez supprimer que vos propres demandes"
         )
+    elif current_user.role == RoleEnum.CHEF_SERVICE:
+        # Chef de service peut supprimer les demandes de son équipe
+        if demande.demandeur_id != current_user.id:
+            # Vérifier si le demandeur est dans son département
+            demandeur_result = await db.execute(
+                select(User).where(User.id == demande.demandeur_id)
+            )
+            demandeur = demandeur_result.scalar_one_or_none()
+            if not demandeur or demandeur.departement_id != current_user.departement_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Vous ne pouvez supprimer que les demandes de votre équipe"
+                )
+    # DRH peut supprimer toutes les demandes (pas de vérification supplémentaire)
     
-    if demande.statut == StatutDemandeEnum.REFUSEE:
+    # Vérifier que seules les demandes en attente ou refusées peuvent être supprimées
+    if demande.statut not in [StatutDemandeEnum.EN_ATTENTE, StatutDemandeEnum.REFUSEE]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Une demande refusée ne peut pas être annulée"
+            detail="Seules les demandes en attente ou refusées peuvent être supprimées définitivement"
         )
     
-    demande.statut = StatutDemandeEnum.ANNULEE
+    # Suppression définitive de la base de données
+    await db.delete(demande)
     await db.commit()
-    return {"message": "Demande annulée avec succès"}
+    return {"message": "Demande supprimée définitivement avec succès"}
 
 
 @router.get("/stats/dashboard")
