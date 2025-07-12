@@ -111,6 +111,32 @@ class NotificationService:
         notifications.append(notification)
         
         return notifications
+
+    async def notifier_conflit_demande_equipe(
+        self, 
+        nouvelle_demande: DemandeConge, 
+        demandes_en_conflit: List[DemandeConge],
+        chef_service_id: uuid.UUID
+    ) -> Optional[Notification]:
+        """Notifie le chef de service d'un conflit de congés dans son équipe."""
+        
+        demandeur = await self._get_user(nouvelle_demande.demandeur_id)
+        if not demandeur:
+            return None
+
+        titre = "Alerte : Conflit de congés dans votre équipe"
+        message = f"La demande de {demandeur.nom_complet} du {nouvelle_demande.date_debut.strftime('%d/%m/%Y')} au {nouvelle_demande.date_fin.strftime('%d/%m/%Y')} entre en conflit avec d'autres demandes."
+        
+        # Créer la notification pour le chef de service
+        notification = await self.creer_notification(
+            destinataire_id=chef_service_id,
+            type_notification=TypeNotificationEnum.ALERTE_CONFLIT_EQUIPE,
+            titre=titre,
+            message=message,
+            demande_conge_id=nouvelle_demande.id
+        )
+        
+        return notification
     
     async def generer_rappels_automatiques(self) -> List[Notification]:
         """Génère les rappels automatiques (15 jours avant et retour de congé)"""

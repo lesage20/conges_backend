@@ -19,6 +19,7 @@ class TypeNotificationEnum(str, Enum):
     DEMANDE_ANNULATION = "demande_annulation"
     ANNULATION_APPROUVEE = "annulation_approuvee"
     ANNULATION_REFUSEE = "annulation_refusee"
+    ALERTE_CONFLIT_EQUIPE = "alerte_conflit_equipe"
 
 class Notification(Base):
     __tablename__ = "notifications"

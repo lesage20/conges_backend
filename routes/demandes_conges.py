@@ -392,6 +392,34 @@ async def create_demande_conge(
         try:
             notification_service = NotificationService(db)
             await notification_service.notifier_nouvelle_demande(demande)
+
+            # Vérifier les conflits d'équipe et notifier le chef de service
+            if current_user.departement_id and valideur_id:
+                # Récupérer les autres demandes du même département
+                conflit_query = select(DemandeConge).where(
+                    and_(
+                        DemandeConge.valideur_id == demande.valideur_id,
+                        DemandeConge.demandeur_id != current_user.id, # Exclure les demandes du demandeur actuel
+                        # DemandeConge.id != demande.id, # Exclure la demande qu'on vient de créer
+                        or_(
+                           and_(
+                                DemandeConge.date_fin >= demande.date_debut,
+                                DemandeConge.date_debut <= demande.date_fin
+                            )
+                        ),
+                        # DemandeConge.statut.in_([StatutDemandeEnum.EN_ATTENTE, StatutDemandeEnum.APPROUVEE, StatutDemandeEnum.DEMANDE_ANNULATION, StatutDemandeEnum.ANNULATION_REFUSEE])
+                    )
+                )
+                result = await db.execute(conflit_query)
+                demandes_en_conflit = result.scalars().all()
+                if demandes_en_conflit:
+                    # Le valideur est le chef de service dans ce cas
+                    await notification_service.notifier_conflit_demande_equipe(
+                        nouvelle_demande=demande,
+                        demandes_en_conflit=demandes_en_conflit,
+                        chef_service_id=valideur_id
+                    )
+
         except Exception as e:
             # Ne pas faire échouer la création de demande si les notifications échouent
             print(f"Erreur lors de l'envoi des notifications: {e}")
